@@ -1,0 +1,39 @@
+# Gradle / Java
+.gradle/
+build/
+out/
+run/
+*.hprof
+*.log
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.classpath
+.project
+.settings/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# Datasets & Trained Checkpoints (keep repo lightweight!)
+datasets/
+recordings/
+checkpoints/
+models/*.onnx
+models/*.pt
+models/*.pth
+*.5nn
+*.5nn.gz
+*.npz
+*.parquet
+
+# OS
+.DS_Store
+Thumbs.db

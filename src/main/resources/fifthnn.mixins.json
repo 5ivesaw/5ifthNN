@@ -1,0 +1,14 @@
+{
+  "required": true,
+  "package": "io.fifthnn.mixin",
+  "compatibilityLevel": "JAVA_25",
+  "client": [
+    "KeyMappingAccessor",
+    "MouseHandlerMixin",
+    "MultiPlayerGameModeMixin",
+    "SoundEngineMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 0
+  }
+}

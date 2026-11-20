@@ -1,0 +1,62 @@
+name: Build 5ifthNN (MC 26.3 Fabric Mod & Python Suite)
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-mod:
+    name: Build Fabric 26.3 Mod (Java 25)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 25 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          java-version: '25'
+          distribution: 'temurin'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build 5ifthNN Mod JAR
+        run: ./gradlew build --stacktrace
+
+      - name: Upload 5ifthNN Mod Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: 5ifthNN-mc26.3-fabric-mod
+          path: build/libs/*.jar
+
+  test-python:
+    name: Verify Python Training & Schema Parity
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies (CPU PyTorch + ONNX Runtime)
+        run: |
+          pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install numpy onnx onnxruntime matplotlib tqdm
+
+      - name: Run Schema, Binary I/O & Mirror Tests
+        working-directory: python
+        run: PYTHONPATH=. python3 tests/test_schema_and_io.py
+
+      - name: Smoke-test Model Parameter Count & ONNX Export Parity
+        working-directory: python
+        run: |
+          PYTHONPATH=. python3 -m fifthnn.model
+          PYTHONPATH=. python3 -m fifthnn.export_onnx --random_init --out /tmp/smoke_test.onnx

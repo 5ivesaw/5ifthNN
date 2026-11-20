@@ -1,0 +1,162 @@
+package io.fifthnn.command;
+
+import com.mojang.brigadier.CommandDispatcher;
+import com.mojang.brigadier.arguments.StringArgumentType;
+import com.mojang.brigadier.builder.LiteralArgumentBuilder;
+import io.fifthnn.FifthNNClient;
+import io.fifthnn.config.FifthNNConfig;
+import io.fifthnn.inference.AiController;
+import io.fifthnn.recorder.DatasetRecorderManager;
+import io.fifthnn.schema.FifthNNSchema;
+import io.fifthnn.ui.FifthNNControlScreen;
+import net.fabricmc.fabric.api.client.command.v2.ClientCommandManager;
+import net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource;
+import net.minecraft.client.Minecraft;
+import net.minecraft.network.chat.Component;
+
+import java.util.List;
+
+/**
+ * Registers `/fifthnn` and `/5nn` client commands for quick recording, tagging,
+ * GUI opening, and Phase 2 ONNX model loading without leaving chat.
+ */
+public final class FifthNNCommands {
+    private FifthNNCommands() {}
+
+    public static void register(CommandDispatcher<FabricClientCommandSource> dispatcher) {
+        dispatcher.register(buildRoot("fifthnn"));
+        dispatcher.register(buildRoot("5nn"));
+    }
+
+    private static LiteralArgumentBuilder<FabricClientCommandSource> buildRoot(String literal) {
+        return ClientCommandManager.literal(literal)
+                .executes(ctx -> {
+                    openGui();
+                    return 1;
+                })
+                .then(ClientCommandManager.literal("gui").executes(ctx -> {
+                    openGui();
+                    return 1;
+                }))
+                .then(ClientCommandManager.literal("rec")
+                        .then(ClientCommandManager.literal("start")
+                                .executes(ctx -> {
+                                    FifthNNClient.getRecorder().startRecording(
+                                            Minecraft.getInstance(),
+                                            FifthNNClient.getConfig().getRecordingModeEnum()
+                                    );
+                                    return 1;
+                                })
+                                .then(ClientCommandManager.argument("mode", StringArgumentType.word())
+                                        .executes(ctx -> {
+                                            String raw = StringArgumentType.getString(ctx, "mode");
+                                            FifthNNSchema.RecordingMode mode = FifthNNSchema.RecordingMode.fromName(raw);
+                                            FifthNNClient.getRecorder().startRecording(Minecraft.getInstance(), mode);
+                                            return 1;
+                                        })))
+                        .then(ClientCommandManager.literal("stop").executes(ctx -> {
+                            FifthNNClient.getRecorder().stopRecording(Minecraft.getInstance(), "Command stop");
+                            return 1;
+                        })))
+                .then(ClientCommandManager.literal("mode")
+                        .then(ClientCommandManager.argument("mode", StringArgumentType.word())
+                                .executes(ctx -> {
+                                    String raw = StringArgumentType.getString(ctx, "mode");
+                                    FifthNNSchema.RecordingMode mode = FifthNNSchema.RecordingMode.fromName(raw);
+                                    FifthNNClient.getConfig().setRecordingModeEnum(mode);
+                                    ctx.getSource().sendFeedback(Component.literal(
+                                            "§a[5ifthNN] Recording mode set to §e" + mode.name() + " §7(" + mode.description + ")"));
+                                    return 1;
+                                })))
+                .then(ClientCommandManager.literal("server")
+                        .then(ClientCommandManager.argument("profile", StringArgumentType.word())
+                                .executes(ctx -> {
+                                    String srv = StringArgumentType.getString(ctx, "profile");
+                                    FifthNNConfig cfg = FifthNNClient.getConfig();
+                                    cfg.serverProfile = srv;
+                                    cfg.save();
+                                    ctx.getSource().sendFeedback(Component.literal("§a[5ifthNN] Server profile set to §b" + srv));
+                                    return 1;
+                                })))
+                .then(ClientCommandManager.literal("map")
+                        .then(ClientCommandManager.argument("name", StringArgumentType.greedyString())
+                                .executes(ctx -> {
+                                    String map = StringArgumentType.getString(ctx, "name");
+                                    FifthNNConfig cfg = FifthNNClient.getConfig();
+                                    cfg.mapNameOverride = map;
+                                    cfg.save();
+                                    ctx.getSource().sendFeedback(Component.literal("§a[5ifthNN] Map tag set to §b" + map));
+                                    return 1;
+                                })))
+                .then(ClientCommandManager.literal("pvp")
+                        .then(ClientCommandManager.literal("1.8").executes(ctx -> {
+                            FifthNNConfig cfg = FifthNNClient.getConfig();
+                            cfg.pvpMode18 = true;
+                            cfg.save();
+                            ctx.getSource().sendFeedback(Component.literal("§a[5ifthNN] PvP mode set to §e1.8 BedWars"));
+                            return 1;
+                        }))
+                        .then(ClientCommandManager.literal("modern").executes(ctx -> {
+                            FifthNNConfig cfg = FifthNNClient.getConfig();
+                            cfg.pvpMode18 = false;
+                            cfg.save();
+                            ctx.getSource().sendFeedback(Component.literal("§a[5ifthNN] PvP mode set to §7Modern"));
+                            return 1;
+                        })))
+                .then(ClientCommandManager.literal("model")
+                        .then(ClientCommandManager.literal("list").executes(ctx -> {
+                            List<String> models = FifthNNClient.getAiController().listAvailableModels();
+                            if (models.isEmpty()) {
+                                ctx.getSource().sendFeedback(Component.literal(
+                                        "§e[5ifthNN] No .onnx files in " + FifthNNClient.getConfig().getModelsDir()));
+                            } else {
+                                ctx.getSource().sendFeedback(Component.literal(
+                                        "§b[5ifthNN] Available ONNX models: §f" + String.join(", ", models)));
+                            }
+                            return 1;
+                        }))
+                        .then(ClientCommandManager.literal("load")
+                                .then(ClientCommandManager.argument("file", StringArgumentType.greedyString())
+                                        .executes(ctx -> {
+                                            String file = StringArgumentType.getString(ctx, "file");
+                                            FifthNNClient.getAiController().loadSelectedModel(Minecraft.getInstance(), file);
+                                            return 1;
+                                        }))))
+                .then(ClientCommandManager.literal("ai")
+                        .then(ClientCommandManager.literal("on").executes(ctx -> {
+                            FifthNNClient.getAiController().setMode(Minecraft.getInstance(), FifthNNSchema.AiControlMode.INFER);
+                            return 1;
+                        }))
+                        .then(ClientCommandManager.literal("dagger").executes(ctx -> {
+                            FifthNNClient.getAiController().setMode(Minecraft.getInstance(), FifthNNSchema.AiControlMode.HG_DAGGER);
+                            return 1;
+                        }))
+                        .then(ClientCommandManager.literal("off").executes(ctx -> {
+                            FifthNNClient.getAiController().emergencyStop(Minecraft.getInstance(), "Command off");
+                            return 1;
+                        })))
+                .then(ClientCommandManager.literal("status").executes(ctx -> {
+                    FifthNNConfig cfg = FifthNNClient.getConfig();
+                    DatasetRecorderManager rec = FifthNNClient.getRecorder();
+                    AiController ai = FifthNNClient.getAiController();
+                    String s = String.format(
+                            "§b[5ifthNN Status] §fRec=%s (%s, %d valid ticks) | Server=%s | PvP=%s | AI=%s (%s, %.2fms)",
+                            rec.isRecording() ? "§aON" : "§7OFF",
+                            cfg.getRecordingModeEnum().name(),
+                            rec.getValidFramesWritten(),
+                            cfg.serverProfile,
+                            cfg.pvpMode18 ? "1.8" : "modern",
+                            ai.getMode().name(),
+                            ai.getEngine().getLoadedModelName(),
+                            ai.getEngine().getEmaLatencyMs()
+                    );
+                    ctx.getSource().sendFeedback(Component.literal(s));
+                    return 1;
+                }));
+    }
+
+    private static void openGui() {
+        Minecraft mc = Minecraft.getInstance();
+        mc.execute(() -> mc.setScreen(new FifthNNControlScreen()));
+    }
+}
