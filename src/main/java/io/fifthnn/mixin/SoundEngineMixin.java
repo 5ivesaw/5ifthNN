@@ -6,7 +6,7 @@ import net.minecraft.client.sounds.SoundEngine;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
-import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 /**
  * Captures directional BedWars sound cues (footsteps, TNT fuse, fireball, pearl, bed break)
@@ -14,8 +14,8 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  */
 @Mixin(SoundEngine.class)
 public abstract class SoundEngineMixin {
-    @Inject(method = "play", at = @At("HEAD"), require = 0)
-    private void fifthnn$captureSound(SoundInstance sound, CallbackInfo ci) {
+    @Inject(method = "play", at = @At("HEAD"))
+    private void fifthnn$captureSound(SoundInstance sound, CallbackInfoReturnable<SoundEngine.PlayResult> cir) {
         if (sound == null) return;
         var tracker = FifthNNClient.getInputTracker();
         if (tracker != null && sound.getIdentifier() != null) {

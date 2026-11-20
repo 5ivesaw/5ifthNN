@@ -18,8 +18,8 @@ public abstract class MouseHandlerMixin {
     @Shadow
     private double accumulatedDY;
 
-    @Inject(method = "turnPlayer", at = @At("HEAD"), require = 0)
-    private void fifthnn$captureMouseDelta(CallbackInfo ci) {
+    @Inject(method = "turnPlayer(D)V", at = @At("HEAD"))
+    private void fifthnn$captureMouseDelta(double movementTime, CallbackInfo ci) {
         var tracker = FifthNNClient.getInputTracker();
         if (tracker != null && (accumulatedDX != 0.0 || accumulatedDY != 0.0)) {
             tracker.onRawMouseMove(accumulatedDX, accumulatedDY);
