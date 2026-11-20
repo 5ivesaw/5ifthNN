@@ -85,10 +85,16 @@ public final class WorldSnapshotCapture {
         fr.hp = player.getHealth();
         fr.absorption = player.getAbsorptionAmount();
         fr.hunger = player.getFoodData().getFoodLevel();
-        fr.swingProgress = player.swingTime > 0 ? Math.min(1.0f, player.swingTime / 6.0f) : 0.0f;
+        fr.swingProgress = player.getSwingAnimation(0.0f);
         fr.attackCooldown = player.getAttackStrengthScale(0.0f);
         var atkAttr = player.getAttribute(Attributes.ATTACK_SPEED);
         fr.attackSpeedAttr = atkAttr != null ? (float) atkAttr.getValue() : 4.0f;
+
+        // Pre-populate ownTeamId before voxel/bed classification so own bed is tagged accurately
+        fr.ownTeamId = stateTracker.getOwnTeamId();
+        if (fr.ownTeamId == 0 && player.getTeam() != null) {
+            fr.ownTeamId = BedWarsStateTracker.chatColorToTeamId(player.getTeam().getColor());
+        }
 
         int sFlags = 0;
         if (player.onGround()) sFlags |= FifthNNSchema.SFLAG_ON_GROUND;
@@ -303,18 +309,19 @@ public final class WorldSnapshotCapture {
                 if (p.isCrouching()) pFlags |= 1 << 2;
                 if (p.isSprinting()) pFlags |= 1 << 3;
                 if (p.isInvisible()) pFlags |= 1 << 4;
-                if (p.swingTime > 0) pFlags |= 1 << 5;
+                if (p.isSwinging()) pFlags |= 1 << 5;
                 if (p.hurtTime > 0) pFlags |= 1 << 6;
 
                 Vec3 pv = p.getDeltaMovement();
                 int mainCat = classifyItem(p.getMainHandItem());
                 int offCat = classifyItem(p.getOffhandItem());
                 int armorSum = computeArmorSum(p);
+                int enemyTeamId = p.getTeam() != null ? BedWarsStateTracker.chatColorToTeamId(p.getTeam().getColor()) : 0;
 
                 fr.players.add(new FrameData.PlayerEntry(
                         p.getId(),
                         p.getUUID().hashCode(),
-                        0,
+                        enemyTeamId,
                         pFlags,
                         (float) p.getX(), (float) p.getY(), (float) p.getZ(),
                         (float) pv.x, (float) pv.y, (float) pv.z,
@@ -484,7 +491,7 @@ public final class WorldSnapshotCapture {
     }
 
     private static void captureGuiState(Minecraft mc, FrameData fr) {
-        Screen screen = mc.gui.getScreen();
+        Screen screen = mc.gui.screen();
         if (screen == null) {
             fr.guiType = FifthNNSchema.GUI_NONE;
             fr.guiSlotCount = 0;

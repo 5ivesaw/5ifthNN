@@ -38,7 +38,7 @@ public final class HumanActionExecutor {
         if (guiClickCooldownTicks > 0) guiClickCooldownTicks--;
 
         // Case 1: Container / Shop GUI is open -> execute masked discrete GUI action
-        if (mc.gui.getScreen() instanceof AbstractContainerScreen<?> acs) {
+        if (mc.gui.screen() instanceof AbstractContainerScreen<?> acs) {
             releaseMovementKeys(mc);
             if (dec.guiAction() == 1 && guiClickCooldownTicks == 0) {
                 player.closeContainer();
@@ -55,7 +55,7 @@ public final class HumanActionExecutor {
         }
 
         // Do not fight pause / chat screens
-        if (mc.gui.getScreen() != null) {
+        if (mc.gui.screen() != null) {
             releaseAllControls(mc);
             return;
         }

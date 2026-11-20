@@ -16,7 +16,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up JDK 25 (Temurin)
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           java-version: '25'
           distribution: 'temurin'
@@ -27,19 +27,14 @@ jobs:
       - name: Build 5ifthNN Mod JAR
         run: ./gradlew build --stacktrace
 
-      - name: Inspect MC 26.3 API Signatures (on failure)
-        if: failure()
+      - name: Verify Mixin Targets in MC 26.3 Bytecode
         run: |
           MC_JAR=$(find .gradle ~/.gradle -name "*minecraft*26.3*.jar" 2>/dev/null | head -n 1)
-          echo "MC_JAR=$MC_JAR"
-          if [ -n "$MC_JAR" ]; then
-            javap -cp "$MC_JAR" net.minecraft.client.Minecraft | grep -iE "screen|gui" || true
-            javap -cp "$MC_JAR" net.minecraft.client.gui.Gui | grep -iE "screen|hud|hide" || true
-            javap -cp "$MC_JAR" net.minecraft.client.multiplayer.MultiPlayerGameMode | grep -iE "container|click|slot|input" || true
-            javap -cp "$MC_JAR" net.minecraft.world.entity.LivingEntity | grep -iE "swing|attack" || true
-            javap -cp "$MC_JAR" com.mojang.blaze3d.platform.InputConstants | grep -iE "F8|F9|F10|ALT" | head -n 20 || true
-            javap -cp "$MC_JAR" 'com.mojang.blaze3d.platform.InputConstants$Type' || true
-          fi
+          echo "Verifying mixins against $MC_JAR"
+          javap -p -cp "$MC_JAR" net.minecraft.client.KeyMapping | grep -E "clickCount"
+          javap -p -cp "$MC_JAR" net.minecraft.client.MouseHandler | grep -E "accumulatedDX|accumulatedDY|turnPlayer"
+          javap -p -cp "$MC_JAR" net.minecraft.client.multiplayer.MultiPlayerGameMode | grep -E "handleContainerInput"
+          javap -p -cp "$MC_JAR" net.minecraft.client.sounds.SoundEngine | grep -E "play\("
 
       - name: Upload 5ifthNN Mod Artifact
         uses: actions/upload-artifact@v4

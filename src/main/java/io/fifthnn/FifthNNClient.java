@@ -132,7 +132,7 @@ public final class FifthNNClient implements ClientModInitializer {
             }
             lastSelectedHotbar = curSlot;
 
-            boolean containerOpen = mc.gui.getScreen() instanceof AbstractContainerScreen<?>;
+            boolean containerOpen = mc.gui.screen() instanceof AbstractContainerScreen<?>;
             if (wasContainerOpen && !containerOpen) {
                 inputTracker.onGuiClosed();
             }
@@ -145,7 +145,7 @@ public final class FifthNNClient implements ClientModInitializer {
                 recorder.toggleRecording(mc);
             }
             while (keyOpenGui.consumeClick()) {
-                if (mc.gui.getScreen() instanceof FifthNNControlScreen) {
+                if (mc.gui.screen() instanceof FifthNNControlScreen) {
                     mc.gui.setScreen(null);
                 } else {
                     mc.gui.setScreen(new FifthNNControlScreen());
