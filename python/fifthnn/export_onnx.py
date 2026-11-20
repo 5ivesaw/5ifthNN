@@ -67,14 +67,21 @@ def export_to_onnx(ckpt_path: str | None, out_onnx: str, opset: int = 17, random
     out_path = Path(out_onnx)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    torch.onnx.export(
-        wrapper,
-        (dummy_vc, dummy_vf, dummy_obs, dummy_hf, dummy_hs, dummy_upd),
-        str(out_path),
+    export_kwargs = dict(
         input_names=INPUT_NAMES,
         output_names=OUTPUT_NAMES,
         opset_version=opset,
         do_constant_folding=True,
+    )
+    import inspect
+    if "dynamo" in inspect.signature(torch.onnx.export).parameters:
+        export_kwargs["dynamo"] = False
+
+    torch.onnx.export(
+        wrapper,
+        (dummy_vc, dummy_vf, dummy_obs, dummy_hf, dummy_hs, dummy_upd),
+        str(out_path),
+        **export_kwargs,
     )
 
     # Verify numerical parity & benchmark CPU inference speed

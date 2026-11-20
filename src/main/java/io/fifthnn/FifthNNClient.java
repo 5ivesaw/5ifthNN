@@ -31,7 +31,6 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
 import net.minecraft.resources.Identifier;
 import net.minecraft.world.InteractionResult;
-import org.lwjgl.glfw.GLFW;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -91,16 +90,16 @@ public final class FifthNNClient implements ClientModInitializer {
                 Identifier.fromNamespaceAndPath(MOD_ID, "controls")
         );
         keyToggleRecord = KeyMappingHelper.registerKeyMapping(new KeyMapping(
-                "key.fifthnn.toggle_record", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_F9, category
+                "key.fifthnn.toggle_record", InputConstants.Type.KEYBOARD, InputConstants.KEY_F9, category
         ));
         keyOpenGui = KeyMappingHelper.registerKeyMapping(new KeyMapping(
-                "key.fifthnn.open_gui", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_F8, category
+                "key.fifthnn.open_gui", InputConstants.Type.KEYBOARD, InputConstants.KEY_F8, category
         ));
         keyToggleAi = KeyMappingHelper.registerKeyMapping(new KeyMapping(
-                "key.fifthnn.toggle_ai", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_F10, category
+                "key.fifthnn.toggle_ai", InputConstants.Type.KEYBOARD, InputConstants.KEY_F10, category
         ));
         keyDaggerTakeover = KeyMappingHelper.registerKeyMapping(new KeyMapping(
-                "key.fifthnn.dagger_takeover", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_RIGHT_ALT, category
+                "key.fifthnn.dagger_takeover", InputConstants.Type.KEYBOARD, InputConstants.KEY_RALT, category
         ));
     }
 
@@ -133,7 +132,7 @@ public final class FifthNNClient implements ClientModInitializer {
             }
             lastSelectedHotbar = curSlot;
 
-            boolean containerOpen = mc.screen instanceof AbstractContainerScreen<?>;
+            boolean containerOpen = mc.gui.getScreen() instanceof AbstractContainerScreen<?>;
             if (wasContainerOpen && !containerOpen) {
                 inputTracker.onGuiClosed();
             }
@@ -146,10 +145,10 @@ public final class FifthNNClient implements ClientModInitializer {
                 recorder.toggleRecording(mc);
             }
             while (keyOpenGui.consumeClick()) {
-                if (mc.screen instanceof FifthNNControlScreen) {
-                    mc.setScreen(null);
+                if (mc.gui.getScreen() instanceof FifthNNControlScreen) {
+                    mc.gui.setScreen(null);
                 } else {
-                    mc.setScreen(new FifthNNControlScreen());
+                    mc.gui.setScreen(new FifthNNControlScreen());
                 }
             }
             while (keyToggleAi.consumeClick()) {

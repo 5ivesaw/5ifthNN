@@ -85,7 +85,7 @@ public final class WorldSnapshotCapture {
         fr.hp = player.getHealth();
         fr.absorption = player.getAbsorptionAmount();
         fr.hunger = player.getFoodData().getFoodLevel();
-        fr.swingProgress = player.getAttackAnim(0.0f);
+        fr.swingProgress = player.swingTime > 0 ? Math.min(1.0f, player.swingTime / 6.0f) : 0.0f;
         fr.attackCooldown = player.getAttackStrengthScale(0.0f);
         var atkAttr = player.getAttribute(Attributes.ATTACK_SPEED);
         fr.attackSpeedAttr = atkAttr != null ? (float) atkAttr.getValue() : 4.0f;
@@ -303,7 +303,7 @@ public final class WorldSnapshotCapture {
                 if (p.isCrouching()) pFlags |= 1 << 2;
                 if (p.isSprinting()) pFlags |= 1 << 3;
                 if (p.isInvisible()) pFlags |= 1 << 4;
-                if (p.swinging) pFlags |= 1 << 5;
+                if (p.swingTime > 0) pFlags |= 1 << 5;
                 if (p.hurtTime > 0) pFlags |= 1 << 6;
 
                 Vec3 pv = p.getDeltaMovement();
@@ -484,7 +484,7 @@ public final class WorldSnapshotCapture {
     }
 
     private static void captureGuiState(Minecraft mc, FrameData fr) {
-        Screen screen = mc.screen;
+        Screen screen = mc.gui.getScreen();
         if (screen == null) {
             fr.guiType = FifthNNSchema.GUI_NONE;
             fr.guiSlotCount = 0;

@@ -8,7 +8,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.world.inventory.AbstractContainerMenu;
-import net.minecraft.world.inventory.ClickType;
+import net.minecraft.world.inventory.ContainerInput;
 
 /**
  * Phase 2 Non-Strategy Thin Execution Layer.
@@ -38,7 +38,7 @@ public final class HumanActionExecutor {
         if (guiClickCooldownTicks > 0) guiClickCooldownTicks--;
 
         // Case 1: Container / Shop GUI is open -> execute masked discrete GUI action
-        if (mc.screen instanceof AbstractContainerScreen<?> acs) {
+        if (mc.gui.getScreen() instanceof AbstractContainerScreen<?> acs) {
             releaseMovementKeys(mc);
             if (dec.guiAction() == 1 && guiClickCooldownTicks == 0) {
                 player.closeContainer();
@@ -47,7 +47,7 @@ public final class HumanActionExecutor {
                 int slotIdx = dec.guiAction() - 2;
                 AbstractContainerMenu menu = acs.getMenu();
                 if (slotIdx >= 0 && slotIdx < menu.slots.size() && mc.gameMode != null) {
-                    mc.gameMode.handleInventoryMouseClick(menu.containerId, slotIdx, 0, ClickType.PICKUP, player);
+                    mc.gameMode.handleContainerInput(menu.containerId, slotIdx, 0, ContainerInput.PICKUP, player);
                     guiClickCooldownTicks = 3; // ~150ms human shop click cadence
                 }
             }
@@ -55,7 +55,7 @@ public final class HumanActionExecutor {
         }
 
         // Do not fight pause / chat screens
-        if (mc.screen != null) {
+        if (mc.gui.getScreen() != null) {
             releaseAllControls(mc);
             return;
         }

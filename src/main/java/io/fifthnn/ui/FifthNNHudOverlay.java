@@ -22,7 +22,7 @@ public final class FifthNNHudOverlay {
     public static void render(GuiGraphicsExtractor graphics, DeltaTracker deltaTracker) {
         Minecraft mc = Minecraft.getInstance();
         FifthNNConfig cfg = FifthNNClient.getConfig();
-        if (mc.player == null || mc.options.hideGui || cfg == null || !cfg.showHudOverlay) {
+        if (mc.player == null || cfg == null || !cfg.showHudOverlay) {
             return;
         }
 

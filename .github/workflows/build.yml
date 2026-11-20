@@ -27,6 +27,20 @@ jobs:
       - name: Build 5ifthNN Mod JAR
         run: ./gradlew build --stacktrace
 
+      - name: Inspect MC 26.3 API Signatures (on failure)
+        if: failure()
+        run: |
+          MC_JAR=$(find .gradle ~/.gradle -name "*minecraft*26.3*.jar" 2>/dev/null | head -n 1)
+          echo "MC_JAR=$MC_JAR"
+          if [ -n "$MC_JAR" ]; then
+            javap -cp "$MC_JAR" net.minecraft.client.Minecraft | grep -iE "screen|gui" || true
+            javap -cp "$MC_JAR" net.minecraft.client.gui.Gui | grep -iE "screen|hud|hide" || true
+            javap -cp "$MC_JAR" net.minecraft.client.multiplayer.MultiPlayerGameMode | grep -iE "container|click|slot|input" || true
+            javap -cp "$MC_JAR" net.minecraft.world.entity.LivingEntity | grep -iE "swing|attack" || true
+            javap -cp "$MC_JAR" com.mojang.blaze3d.platform.InputConstants | grep -iE "F8|F9|F10|ALT" | head -n 20 || true
+            javap -cp "$MC_JAR" 'com.mojang.blaze3d.platform.InputConstants$Type' || true
+          fi
+
       - name: Upload 5ifthNN Mod Artifact
         uses: actions/upload-artifact@v4
         with:
@@ -49,7 +63,7 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install numpy onnx onnxruntime matplotlib tqdm
+          pip install numpy onnx onnxscript onnxruntime matplotlib tqdm
 
       - name: Run Schema, Binary I/O & Mirror Tests
         working-directory: python
