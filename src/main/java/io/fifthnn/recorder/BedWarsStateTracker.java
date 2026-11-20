@@ -1,7 +1,6 @@
 package io.fifthnn.recorder;
 
 import io.fifthnn.schema.FifthNNSchema;
-import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
@@ -13,6 +12,7 @@ import net.minecraft.world.scores.Scoreboard;
 
 import java.util.HashSet;
 import java.util.Locale;
+import java.util.Optional;
 import java.util.Set;
 
 /**
@@ -166,7 +166,7 @@ public final class BedWarsStateTracker {
         // Parse scoreboard sidebar for team color, map name, bed counts, and lobby heuristics
         parseScoreboard(mc, player);
         if (ownTeamId == 0 && player.getTeam() != null) {
-            ownTeamId = chatColorToTeamId(player.getTeam().getColor());
+            ownTeamId = teamColorToTeamId(player.getTeam().getColor());
         }
 
         if (!hasHomeSpawn && matchPhase == FifthNNSchema.MATCH_PHASE_IN_GAME && player.isAlive() && !player.isSpectator()) {
@@ -314,19 +314,12 @@ public final class BedWarsStateTracker {
         return ownTeamId;
     }
 
-    public static int chatColorToTeamId(ChatFormatting color) {
-        if (color == null) return 0;
-        return switch (color) {
-            case RED, DARK_RED -> 1;
-            case BLUE, DARK_BLUE -> 2;
-            case GREEN, DARK_GREEN -> 3;
-            case YELLOW, GOLD -> 4;
-            case AQUA, DARK_AQUA -> 5;
-            case WHITE -> 6;
-            case LIGHT_PURPLE, DARK_PURPLE -> 7;
-            case GRAY, DARK_GRAY -> 8;
-            default -> 0;
-        };
+    public static int teamColorToTeamId(Optional<?> colorOpt) {
+        if (colorOpt == null || colorOpt.isEmpty()) return 0;
+        String lower = colorOpt.get().toString().toLowerCase(Locale.ROOT);
+        if (lower.contains("purple")) return 7; // LIGHT_PURPLE / DARK_PURPLE -> Pink/Magenta team
+        if (lower.contains("gold")) return 4;   // GOLD -> Yellow team
+        return parseTeamColorLine(lower);
     }
 
     public String getDetectedMapName() {

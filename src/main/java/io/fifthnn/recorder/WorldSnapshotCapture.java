@@ -93,7 +93,7 @@ public final class WorldSnapshotCapture {
         // Pre-populate ownTeamId before voxel/bed classification so own bed is tagged accurately
         fr.ownTeamId = stateTracker.getOwnTeamId();
         if (fr.ownTeamId == 0 && player.getTeam() != null) {
-            fr.ownTeamId = BedWarsStateTracker.chatColorToTeamId(player.getTeam().getColor());
+            fr.ownTeamId = BedWarsStateTracker.teamColorToTeamId(player.getTeam().getColor());
         }
 
         int sFlags = 0;
@@ -316,7 +316,7 @@ public final class WorldSnapshotCapture {
                 int mainCat = classifyItem(p.getMainHandItem());
                 int offCat = classifyItem(p.getOffhandItem());
                 int armorSum = computeArmorSum(p);
-                int enemyTeamId = p.getTeam() != null ? BedWarsStateTracker.chatColorToTeamId(p.getTeam().getColor()) : 0;
+                int enemyTeamId = p.getTeam() != null ? BedWarsStateTracker.teamColorToTeamId(p.getTeam().getColor()) : 0;
 
                 fr.players.add(new FrameData.PlayerEntry(
                         p.getId(),
