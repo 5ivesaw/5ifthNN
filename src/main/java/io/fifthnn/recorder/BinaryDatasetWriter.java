@@ -203,9 +203,10 @@ public final class BinaryDatasetWriter implements AutoCloseable {
         ByteArrayOutputStream baos = new ByteArrayOutputStream(3072);
         DataOutputStream dos = new DataOutputStream(baos);
 
-        // 1. Frame Meta (>qqBBhf)
+        // 1. Frame Meta (>qqiBBhf) — Schema v2 adds episodeId for clean multi-game segmentation
         dos.writeLong(fr.tickIndex);
         dos.writeLong(fr.timestampMs);
+        dos.writeInt(fr.episodeId);
         dos.writeByte(fr.matchPhase & 0xFF);
         dos.writeByte(fr.qualityFlags & 0xFF);
         dos.writeShort(fr.pingMs);

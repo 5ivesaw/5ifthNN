@@ -184,13 +184,9 @@ public final class FifthNNClient implements ClientModInitializer {
             return InteractionResult.PASS;
         });
 
-        // Chat & system event parser for BedWars milestones (beds, kills, final kills, upgrades, win/loss)
+        // Server system/plugin message parser for BedWars milestones (beds, kills, final kills, upgrades, win/loss)
+        // Intentionally excludes player CHAT events so other players cannot spoof match milestones in chat.
         ClientReceiveMessageEvents.GAME.register((message, overlay) -> {
-            Minecraft mc = Minecraft.getInstance();
-            String self = mc.player != null ? mc.player.getGameProfile().name() : "";
-            stateTracker.onChatMessage(message.getString(), self);
-        });
-        ClientReceiveMessageEvents.CHAT.register((message, signed, sender, params, ts) -> {
             Minecraft mc = Minecraft.getInstance();
             String self = mc.player != null ? mc.player.getGameProfile().name() : "";
             stateTracker.onChatMessage(message.getString(), self);

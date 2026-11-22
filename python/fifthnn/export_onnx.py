@@ -44,7 +44,13 @@ OUTPUT_NAMES = [
 ]
 
 
-def export_to_onnx(ckpt_path: str | None, out_onnx: str, opset: int = 17, random_init: bool = False) -> None:
+def export_to_onnx(
+    ckpt_path: str | None,
+    out_onnx: str,
+    opset: int = 17,
+    random_init: bool = False,
+    quantize_int8: bool = False,
+) -> None:
     model = FifthNNModel(include_aux=False)
     if ckpt_path and not random_init:
         ckpt = torch.load(ckpt_path, map_location="cpu")
@@ -131,15 +137,31 @@ def export_to_onnx(ckpt_path: str | None, out_onnx: str, opset: int = 17, random
     out_path.with_suffix(".onnx.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
     print(f"Exported {out_path} ({size_mb:.2f} MB) | params={meta['params']:,} | parity={max_diff:.2e} | CPU={avg_ms:.2f} ms/tick")
 
+    if quantize_int8:
+        from onnxruntime.quantization import QuantType, quantize_dynamic
+
+        q_path = out_path.with_name(out_path.stem + "_int8.onnx")
+        quantize_dynamic(str(out_path), str(q_path), weight_type=QuantType.QUInt8)
+        q_sess = ort.InferenceSession(str(q_path), sess_options=sess_opts, providers=["CPUExecutionProvider"])
+        for _ in range(10):
+            q_sess.run(OUTPUT_NAMES, ort_inputs)
+        qt0 = time.perf_counter()
+        for _ in range(iters):
+            q_sess.run(OUTPUT_NAMES, ort_inputs)
+        q_ms = (time.perf_counter() - qt0) * 1000.0 / iters
+        q_mb = q_path.stat().st_size / (1024.0 * 1024.0)
+        print(f"Exported INT8 {q_path} ({q_mb:.2f} MB) | CPU={q_ms:.2f} ms/tick")
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Export 5ifthNN PyTorch checkpoint to lightweight ONNX")
     parser.add_argument("--ckpt", type=str, default=None, help="Path to .pt checkpoint")
     parser.add_argument("--out", type=str, default="models/fifthnn_v1.onnx")
     parser.add_argument("--random_init", action="store_true", help="Export random-weight smoke test model")
+    parser.add_argument("--quantize_int8", action="store_true", help="Also emit dynamic INT8 quantized .onnx (~2 MB)")
     parser.add_argument("--opset", type=int, default=17)
     args = parser.parse_args()
-    export_to_onnx(args.ckpt, args.out, opset=args.opset, random_init=args.random_init)
+    export_to_onnx(args.ckpt, args.out, opset=args.opset, random_init=args.random_init, quantize_int8=args.quantize_int8)
 
 
 if __name__ == "__main__":

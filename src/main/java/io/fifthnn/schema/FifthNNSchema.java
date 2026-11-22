@@ -9,7 +9,7 @@ public final class FifthNNSchema {
 
     public static final byte[] FILE_MAGIC = new byte[]{'5', 'N', 'N', '1'};
     public static final byte[] FRAME_MAGIC = new byte[]{'F', 'R', 'M', '1'};
-    public static final int SCHEMA_VERSION = 1;
+    public static final int SCHEMA_VERSION = 2;
 
     // Raw world-aligned 1:1 local voxel cube in .5nn.gz (13 x 7 x 13 = 1,183 cells)
     public static final int RAW_VOXEL_RADIUS_XZ = 6;
@@ -148,6 +148,7 @@ public final class FifthNNSchema {
     public static final int QFLAG_AI_ACTIVE = 1 << 4;
     public static final int QFLAG_DEAD_OR_RESPAWN = 1 << 5;
     public static final int QFLAG_LOBBY_OR_SPEC = 1 << 6;
+    public static final int QFLAG_TELEPORT_TICK = 1 << 7;
 
     // Self flags
     public static final int SFLAG_ON_GROUND = 1 << 0;

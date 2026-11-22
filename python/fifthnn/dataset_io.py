@@ -28,7 +28,9 @@ from .schema import (
 )
 
 # Precompiled big-endian structs matching Java DataOutputStream
-_S_FRAME_META = struct.Struct(">qqBBhf")
+_S_FRAME_META_V1 = struct.Struct(">qqBBhf")
+_S_FRAME_META_V2 = struct.Struct(">qqiBBhf")
+_S_FRAME_META = _S_FRAME_META_V2
 _S_SELF = struct.Struct(">ddd15fHBBH")
 _S_CROSSHAIR = struct.Struct(">BfiiiBBBfi")
 _S_LIDAR = struct.Struct(">fBB")
@@ -47,6 +49,7 @@ _S_INPUT = struct.Struct(">H4fBBbbBBf")
 class FrameRecord:
     tick_index: int
     timestamp_ms: int
+    episode_id: int
     match_phase: int
     quality_flags: int
     ping_ms: int
@@ -139,12 +142,21 @@ class FrameRecord:
     reward_delta: float
 
 
-def _unpack_frame(buf: bytes) -> FrameRecord:
+def _unpack_frame(buf: bytes, schema_version: int = SCHEMA_VERSION) -> FrameRecord:
     mv = memoryview(buf)
     off = 0
 
-    meta = _S_FRAME_META.unpack_from(mv, off)
-    off += _S_FRAME_META.size
+    if schema_version >= 2:
+        tick_index, timestamp_ms, episode_id, match_phase, quality_flags, ping_ms, server_tps_est = (
+            _S_FRAME_META_V2.unpack_from(mv, off)
+        )
+        off += _S_FRAME_META_V2.size
+    else:
+        tick_index, timestamp_ms, match_phase, quality_flags, ping_ms, server_tps_est = (
+            _S_FRAME_META_V1.unpack_from(mv, off)
+        )
+        episode_id = 1
+        off += _S_FRAME_META_V1.size
 
     self_vals = _S_SELF.unpack_from(mv, off)
     off += _S_SELF.size
@@ -219,12 +231,13 @@ def _unpack_frame(buf: bytes) -> FrameRecord:
     off += _S_INPUT.size
 
     return FrameRecord(
-        tick_index=meta[0],
-        timestamp_ms=meta[1],
-        match_phase=meta[2],
-        quality_flags=meta[3],
-        ping_ms=meta[4],
-        server_tps_est=meta[5],
+        tick_index=tick_index,
+        timestamp_ms=timestamp_ms,
+        episode_id=episode_id,
+        match_phase=match_phase,
+        quality_flags=quality_flags,
+        ping_ms=ping_ms,
+        server_tps_est=server_tps_est,
         x=self_vals[0],
         y=self_vals[1],
         z=self_vals[2],
@@ -312,8 +325,8 @@ def read_recording(path: str | Path, valid_only: bool = False) -> Tuple[Dict, Li
         if magic != FILE_MAGIC:
             raise ValueError(f"Invalid 5ifthNN file magic in {path}: {magic!r}")
         (version,) = struct.unpack(">H", f.read(2))
-        if version != SCHEMA_VERSION:
-            raise ValueError(f"Unsupported schema version {version} (expected {SCHEMA_VERSION})")
+        if version not in (1, SCHEMA_VERSION):
+            raise ValueError(f"Unsupported schema version {version} (expected 1 or {SCHEMA_VERSION})")
         (hdr_len,) = struct.unpack(">I", f.read(4))
         header = json.loads(f.read(hdr_len).decode("utf-8"))
 
@@ -331,7 +344,7 @@ def read_recording(path: str | Path, valid_only: bool = False) -> Tuple[Dict, Li
                 payload = f.read(plen)
                 if len(payload) < plen:
                     break
-                frame = _unpack_frame(payload)
+                frame = _unpack_frame(payload, schema_version=version)
                 if not valid_only or (frame.quality_flags & QFLAG_VALID_IN_GAME):
                     frames.append(frame)
             except (EOFError, OSError, struct.error):

@@ -14,6 +14,7 @@ public final class FrameData {
     // Frame Meta
     public long tickIndex;
     public long timestampMs;
+    public int episodeId;
     public int matchPhase;
     public int qualityFlags;
     public short pingMs;

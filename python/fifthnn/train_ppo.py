@@ -20,6 +20,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from .audit import split_contiguous_segments
 from .dataset_io import FrameRecord, read_recording
 from .features import encode_frame_obs, encode_frame_targets
 from .model import FifthNNModel
@@ -30,6 +31,7 @@ from .schema import (
     EVT_GAME_WON,
     EVT_KILL,
     EVT_OWN_BED_LOST,
+    SCHEMA_VERSION,
 )
 
 
@@ -130,67 +132,72 @@ def run_ppo_update_on_rollouts(
 
     opt = torch.optim.AdamW(policy.parameters(), lr=lr, weight_decay=1e-4)
 
-    # Pre-encode episodes & compute old log-probs + GAE advantages
+    # Pre-encode contiguous episodes & compute old log-probs + GAE advantages
     chunks = []
+    episode_count = 0
     for path in files:
-        header, frames = read_recording(path, valid_only=True)
-        if len(frames) < chunk_len:
-            continue
+        header, raw_frames = read_recording(path, valid_only=False)
+        segments = split_contiguous_segments(raw_frames)
         pvp18 = header.get("pvpMode", "1.8") == "1.8"
         srv_id = hash(header.get("serverProfile", "local")) & 0x7
 
-        rewards = compute_bedwars_shaped_rewards(frames)
-        vc, vf, obs = [], [], []
-        tgts = {k: [] for k in ("move", "yaw_bin", "pitch_bin", "left_state", "right_state", "hotbar", "gui_action", "gui_open")}
-        for fr in frames:
-            c, f, o = encode_frame_obs(fr, server_profile_id=srv_id, pvp_mode_18=pvp18, mirror=False)
-            vc.append(c)
-            vf.append(f)
-            obs.append(o)
-            t = encode_frame_targets(fr, mirror=False)
-            for k in tgts:
-                tgts[k].append(t[k])
+        for frames in segments:
+            if len(frames) < chunk_len:
+                continue
+            episode_count += 1
 
-        vc_t = torch.from_numpy(np.stack(vc)).unsqueeze(0).to(device)
-        vf_t = torch.from_numpy(np.stack(vf)).unsqueeze(0).to(device)
-        obs_t = torch.from_numpy(np.stack(obs)).unsqueeze(0).to(device)
-        act_t = {
-            "move": torch.from_numpy(np.stack(tgts["move"])).unsqueeze(0).to(device),
-            "yaw_bin": torch.tensor(tgts["yaw_bin"], dtype=torch.long, device=device).unsqueeze(0),
-            "pitch_bin": torch.tensor(tgts["pitch_bin"], dtype=torch.long, device=device).unsqueeze(0),
-            "left_state": torch.tensor(tgts["left_state"], dtype=torch.long, device=device).unsqueeze(0),
-            "right_state": torch.tensor(tgts["right_state"], dtype=torch.long, device=device).unsqueeze(0),
-            "hotbar": torch.tensor(tgts["hotbar"], dtype=torch.long, device=device).unsqueeze(0),
-            "gui_action": torch.tensor(tgts["gui_action"], dtype=torch.long, device=device).unsqueeze(0),
-            "gui_open": torch.tensor(tgts["gui_open"], dtype=torch.float32, device=device).unsqueeze(0),
-        }
+            rewards = compute_bedwars_shaped_rewards(frames)
+            vc, vf, obs = [], [], []
+            tgts = {k: [] for k in ("move", "yaw_bin", "pitch_bin", "left_state", "right_state", "hotbar", "gui_action", "gui_open")}
+            for fr in frames:
+                c, f, o = encode_frame_obs(fr, server_profile_id=srv_id, pvp_mode_18=pvp18, mirror=False)
+                vc.append(c)
+                vf.append(f)
+                obs.append(o)
+                t = encode_frame_targets(fr, mirror=False)
+                for k in tgts:
+                    tgts[k].append(t[k])
 
-        with torch.no_grad():
-            hf, hs = policy.init_hidden(1, device)
-            old_out, _, _ = policy.forward_sequence(vc_t, vf_t, obs_t, hf, hs)
-            rf, rs = ref_bc.init_hidden(1, device)
-            ref_out, _, _ = ref_bc.forward_sequence(vc_t, vf_t, obs_t, rf, rs)
-            old_lp, _, _ = factored_logprob_and_kl(old_out, ref_out, act_t)
-            vals = old_out["value"].squeeze(0).cpu().numpy()
+            vc_t = torch.from_numpy(np.stack(vc)).unsqueeze(0).to(device)
+            vf_t = torch.from_numpy(np.stack(vf)).unsqueeze(0).to(device)
+            obs_t = torch.from_numpy(np.stack(obs)).unsqueeze(0).to(device)
+            act_t = {
+                "move": torch.from_numpy(np.stack(tgts["move"])).unsqueeze(0).to(device),
+                "yaw_bin": torch.tensor(tgts["yaw_bin"], dtype=torch.long, device=device).unsqueeze(0),
+                "pitch_bin": torch.tensor(tgts["pitch_bin"], dtype=torch.long, device=device).unsqueeze(0),
+                "left_state": torch.tensor(tgts["left_state"], dtype=torch.long, device=device).unsqueeze(0),
+                "right_state": torch.tensor(tgts["right_state"], dtype=torch.long, device=device).unsqueeze(0),
+                "hotbar": torch.tensor(tgts["hotbar"], dtype=torch.long, device=device).unsqueeze(0),
+                "gui_action": torch.tensor(tgts["gui_action"], dtype=torch.long, device=device).unsqueeze(0),
+                "gui_open": torch.tensor(tgts["gui_open"], dtype=torch.float32, device=device).unsqueeze(0),
+            }
 
-        adv, ret = compute_gae(rewards, vals)
-        adv = (adv - adv.mean()) / (adv.std() + 1e-6)
+            with torch.no_grad():
+                hf, hs = policy.init_hidden(1, device)
+                old_out, _, _ = policy.forward_sequence(vc_t, vf_t, obs_t, hf, hs)
+                rf, rs = ref_bc.init_hidden(1, device)
+                ref_out, _, _ = ref_bc.forward_sequence(vc_t, vf_t, obs_t, rf, rs)
+                old_lp, _, _ = factored_logprob_and_kl(old_out, ref_out, act_t)
+                vals = old_out["value"].squeeze(0).cpu().numpy()
 
-        for s in range(0, len(frames) - chunk_len + 1, chunk_len):
-            e = s + chunk_len
-            chunks.append(
-                {
-                    "vc": vc_t[:, s:e].cpu(),
-                    "vf": vf_t[:, s:e].cpu(),
-                    "obs": obs_t[:, s:e].cpu(),
-                    "act": {k: v[:, s:e].cpu() for k, v in act_t.items()},
-                    "old_lp": old_lp[:, s:e].cpu(),
-                    "adv": torch.from_numpy(adv[s:e]).unsqueeze(0),
-                    "ret": torch.from_numpy(ret[s:e]).unsqueeze(0),
-                }
-            )
+            adv, ret = compute_gae(rewards, vals)
+            adv = (adv - adv.mean()) / (adv.std() + 1e-6)
 
-    print(f"KL-PPO Self-Play Update | Episodes: {len(files)} | Chunks: {len(chunks)} | KL beta={kl_coef}")
+            for s in range(0, len(frames) - chunk_len + 1, chunk_len):
+                e = s + chunk_len
+                chunks.append(
+                    {
+                        "vc": vc_t[:, s:e].cpu(),
+                        "vf": vf_t[:, s:e].cpu(),
+                        "obs": obs_t[:, s:e].cpu(),
+                        "act": {k: v[:, s:e].cpu() for k, v in act_t.items()},
+                        "old_lp": old_lp[:, s:e].cpu(),
+                        "adv": torch.from_numpy(adv[s:e]).unsqueeze(0),
+                        "ret": torch.from_numpy(ret[s:e]).unsqueeze(0),
+                    }
+                )
+
+    print(f"KL-PPO Self-Play Update | Files: {len(files)} | Contiguous Episodes: {episode_count} | Chunks: {len(chunks)} | KL beta={kl_coef}")
     for ep in range(1, epochs + 1):
         np.random.shuffle(chunks)
         tot_loss, tot_kl = 0.0, 0.0
@@ -231,7 +238,7 @@ def run_ppo_update_on_rollouts(
         print(f"PPO Epoch {ep}/{epochs} | loss={tot_loss / n:.4f} | mean_KL_vs_BC={tot_kl / n:.4f}")
 
     Path(out_ckpt).parent.mkdir(parents=True, exist_ok=True)
-    torch.save({"schema_version": 1, "model_state_dict": policy.state_dict()}, out_ckpt)
+    torch.save({"schema_version": SCHEMA_VERSION, "model_state_dict": policy.state_dict()}, out_ckpt)
     print(f"Saved KL-PPO policy checkpoint to {out_ckpt}")
 
 

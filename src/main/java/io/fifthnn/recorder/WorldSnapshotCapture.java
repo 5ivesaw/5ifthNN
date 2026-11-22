@@ -1,6 +1,7 @@
 package io.fifthnn.recorder;
 
 import io.fifthnn.config.FifthNNConfig;
+import io.fifthnn.mixin.MultiPlayerGameModeAccessor;
 import io.fifthnn.schema.FifthNNSchema;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.ChatScreen;
@@ -18,6 +19,7 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.ai.attributes.Attributes;
+import net.minecraft.world.entity.decoration.ArmorStand;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.item.PrimedTnt;
 import net.minecraft.world.entity.npc.villager.Villager;
@@ -43,6 +45,14 @@ import java.util.Locale;
 
 /**
  * Captures the complete 1:1 visual-equivalent structured FrameData directly from Minecraft 26.3.
+ *
+ * v0.2 upgrades:
+ *  - Finite-difference remote player velocities (fixes multiplayer zero-vel bug)
+ *  - Persistent full-map ArenaLandmarkCache (beds + ArmorStand gens/shops + broken bed tracking)
+ *  - Fake-player shopkeeper NPC exclusion so shop NPCs never pollute the enemy radar
+ *  - Dyed leather armor RGB team detection across Pika/Jartex/Mineberry/Hypixel
+ *  - Universal knownAirBlocks player-placed detection (both self and enemy bridges/defenses)
+ *  - Real MultiPlayerGameMode destroyProgress mining progress capture
  */
 public final class WorldSnapshotCapture {
     private WorldSnapshotCapture() {}
@@ -58,9 +68,16 @@ public final class WorldSnapshotCapture {
         ClientLevel level = mc.level;
         if (player == null || level == null) return null;
 
+        // 0. Pre-capture update: resolve server profile, team color (armor RGB + scoreboard), and lobby/match phase!
+        stateTracker.preCaptureUpdate(mc, player);
+        boolean isInGame = stateTracker.getMatchPhase() == FifthNNSchema.MATCH_PHASE_IN_GAME;
+        ArenaLandmarkCache cache = stateTracker.getLandmarkCache();
+        cache.tickScan(player, level, isInGame);
+
         FrameData fr = new FrameData();
         fr.tickIndex = tickIndex;
         fr.timestampMs = System.currentTimeMillis();
+        fr.ownTeamId = stateTracker.getOwnTeamId();
 
         // Ping
         if (mc.getConnection() != null) {
@@ -90,12 +107,6 @@ public final class WorldSnapshotCapture {
         var atkAttr = player.getAttribute(Attributes.ATTACK_SPEED);
         fr.attackSpeedAttr = atkAttr != null ? (float) atkAttr.getValue() : 4.0f;
 
-        // Pre-populate ownTeamId before voxel/bed classification so own bed is tagged accurately
-        fr.ownTeamId = stateTracker.getOwnTeamId();
-        if (fr.ownTeamId == 0 && player.getTeam() != null) {
-            fr.ownTeamId = BedWarsStateTracker.teamColorToTeamId(player.getTeam().getColor());
-        }
-
         int sFlags = 0;
         if (player.onGround()) sFlags |= FifthNNSchema.SFLAG_ON_GROUND;
         if (player.isShiftKeyDown() || player.isCrouching()) sFlags |= FifthNNSchema.SFLAG_SNEAKING;
@@ -118,29 +129,32 @@ public final class WorldSnapshotCapture {
         if (player.hasEffect(MobEffects.BLINDNESS)) eff |= 1 << 6;
         fr.effectFlags = eff;
 
-        // 2. Crosshair Target (Block or Entity)
+        // 2. Crosshair Target (Block + real destroyProgress, or Entity)
         captureCrosshair(mc, player, level, fr, stateTracker);
 
-        // 3. 1:1 Local 13x7x13 Voxel Cube + Bed Landmarks inside cube
-        captureLocalVoxels(player, level, fr, stateTracker);
+        // 3. 1:1 Local 13x7x13 Voxel Cube + universal air->solid player-placed tracking
+        captureLocalVoxels(player, level, fr, stateTracker, isInGame);
 
         // 4. 32-Ray Panoramic Lidar (16 horizontal + 8 downward ledge/void + 8 forward fan)
         capturePanoramicLidar(player, level, fr, stateTracker);
 
-        // 5. Visible Players, Threats, Dropped Resources & Shop NPCs
-        captureEntities(player, level, fr, config.recordObserverEntities);
+        // 5. Entities: ArmorStand holograms FIRST (identifies shop NPC zones & gens), then Players & Threats!
+        captureEntities(player, level, fr, stateTracker, tickIndex, config.recordObserverEntities);
 
-        // 6. Full 41-Slot Inventory, Economy & Gear Tiers
+        // 6. Populate persistent ArenaLandmarkCache (all known beds, gens, shopkeepers across whole map!)
+        cache.fillLandmarks(fr, fr.ownTeamId, fr.x, fr.y, fr.z);
+
+        // 7. Full 41-Slot Inventory, Economy & Gear Tiers
         captureInventoryAndEconomy(player, fr);
 
-        // 7. Open GUI / Shop Container Snapshot
+        // 8. Open GUI / Shop Container Snapshot
         captureGuiState(mc, fr);
 
-        // 8. Live Human Key States + Sub-Tick Inputs + Sound Radar
+        // 9. Live Human Key States + Sub-Tick Inputs + Sound Radar
         captureKeyMask(mc, fr);
         inputTracker.drainIntoFrame(fr, fr.yaw, fr.pitch);
 
-        // 9. BedWars Match State, Landmarks, Quality Flags & Anti-Loophole Milestone Rewards
+        // 10. BedWars Match State, Teleport Scrubbing, Quality Flags & Anti-Loophole Milestone Rewards
         stateTracker.tickAndFillFrame(mc, player, fr, config.autoTagLobbyInvalid);
 
         return fr;
@@ -149,6 +163,11 @@ public final class WorldSnapshotCapture {
     private static void captureCrosshair(
             Minecraft mc, LocalPlayer player, ClientLevel level, FrameData fr, BedWarsStateTracker st
     ) {
+        if (mc.gameMode != null) {
+            fr.miningProgress = Math.max(0.0f, Math.min(1.0f,
+                    ((MultiPlayerGameModeAccessor) mc.gameMode).fifthnn$getDestroyProgress()));
+        }
+
         HitResult hr = mc.hitResult;
         if (hr == null || hr.getType() == HitResult.Type.MISS) {
             fr.hitType = 0;
@@ -182,22 +201,24 @@ public final class WorldSnapshotCapture {
             Entity ent = ehr.getEntity();
             fr.hitEntityId = ent.getId();
             int hFlags = 0;
-            if (ent instanceof Player p && !isTeammate(player, p)) {
-                hFlags |= 1 << 4; // enemy player
-            } else if (isShopNpc(ent)) {
+            if (isShopNpc(ent, st.getLandmarkCache())) {
                 hFlags |= 1 << 5; // shop NPC
+            } else if (ent instanceof Player p && !isTeammate(player, p, fr.ownTeamId)) {
+                hFlags |= 1 << 4; // enemy player
             }
             fr.hitFlags = hFlags;
         }
     }
 
-    private static void captureLocalVoxels(LocalPlayer player, ClientLevel level, FrameData fr, BedWarsStateTracker st) {
+    private static void captureLocalVoxels(
+            LocalPlayer player, ClientLevel level, FrameData fr, BedWarsStateTracker st, boolean isInGame
+    ) {
         int baseX = (int) Math.floor(player.getX());
         int baseY = (int) Math.floor(player.getY());
         int baseZ = (int) Math.floor(player.getZ());
         int rad = FifthNNSchema.RAW_VOXEL_RADIUS_XZ;
-        int sizeXZ = FifthNNSchema.RAW_VOXEL_SIZE_XZ;
         BlockPos.MutableBlockPos mpos = new BlockPos.MutableBlockPos();
+        ArenaLandmarkCache cache = st.getLandmarkCache();
 
         int idx = 0;
         for (int dy = FifthNNSchema.RAW_VOXEL_MIN_Y; dy <= FifthNNSchema.RAW_VOXEL_MAX_Y; dy++) {
@@ -205,24 +226,14 @@ public final class WorldSnapshotCapture {
                 for (int dx = -rad; dx <= rad; dx++) {
                     mpos.set(baseX + dx, baseY + dy, baseZ + dz);
                     BlockState bs = level.getBlockState(mpos);
+                    cache.observeLocalBlock(mpos, bs.isAir(), isInGame);
+                    if (bs.getBlock() instanceof BedBlock) {
+                        cache.registerBed(mpos.immutable(), bs);
+                    }
                     int packed = classifyPackedVoxel(bs, mpos, st, fr.ownTeamId);
                     fr.voxels[idx++] = (byte) packed;
-
-                    int cat = packed & 0x3F;
-                    if ((cat == FifthNNSchema.BLOCK_BED_ENEMY || cat == FifthNNSchema.BLOCK_BED_OWN)
-                            && fr.landmarks.size() < FifthNNSchema.MAX_LANDMARKS_RAW) {
-                        int lmType = (cat == FifthNNSchema.BLOCK_BED_OWN)
-                                ? FifthNNSchema.LM_OWN_BED : FifthNNSchema.LM_ENEMY_BED;
-                        fr.landmarks.add(new FrameData.LandmarkEntry(
-                                lmType, 0, mpos.getX() + 0.5f, mpos.getY() + 0.5f, mpos.getZ() + 0.5f, 1
-                        ));
-                    }
                 }
             }
-        }
-        // Keep compiler happy about sizeXZ reference
-        if (idx != sizeXZ * sizeXZ * FifthNNSchema.RAW_VOXEL_SIZE_Y) {
-            throw new IllegalStateException("Voxel count mismatch: " + idx);
         }
     }
 
@@ -247,7 +258,7 @@ public final class WorldSnapshotCapture {
             castRay(level, feet, dir, 16.0, 16 + i, fr, st);
         }
 
-        // 24..31: 8 forward-fan rays (pairs of -/+ yaw x +/- pitch for mirror symmetry!)
+        // 24..31: 8 forward-fan rays (symmetric -/+ yaw pairs for exact mirror augmentation)
         float[] fanYaws = {-15f, 15f, -30f, 30f, -15f, 15f, -30f, 30f};
         float[] fanPitches = {-15f, -15f, -15f, -15f, 18f, 18f, 18f, 18f};
         for (int i = 0; i < 8; i++) {
@@ -263,11 +274,12 @@ public final class WorldSnapshotCapture {
             ClientLevel level, Vec3 origin, Vec3 dir, double maxDist, int rayIdx, FrameData fr, BedWarsStateTracker st
     ) {
         Vec3 end = origin.add(dir.scale(maxDist));
-        BlockHitResult bhr = level.clip(new ClipContext(origin, end, ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, net.minecraft.world.phys.shapes.CollisionContext.empty()));
+        BlockHitResult bhr = level.clip(new ClipContext(
+                origin, end, ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE,
+                net.minecraft.world.phys.shapes.CollisionContext.empty()));
         if (bhr.getType() == HitResult.Type.MISS) {
             fr.lidarDist[rayIdx] = (float) maxDist;
             fr.lidarCat[rayIdx] = FifthNNSchema.BLOCK_AIR;
-            // For downward rays (16..23), missing a block within 16m strongly indicates a void drop!
             fr.lidarFlags[rayIdx] = (byte) ((rayIdx >= 16 && rayIdx < 24) ? 0x04 : 0x00);
         } else {
             double dist = origin.distanceTo(bhr.getLocation());
@@ -283,28 +295,47 @@ public final class WorldSnapshotCapture {
         }
     }
 
-    private static void captureEntities(LocalPlayer self, ClientLevel level, FrameData fr, boolean includeObservers) {
+    private static void captureEntities(
+            LocalPlayer self,
+            ClientLevel level,
+            FrameData fr,
+            BedWarsStateTracker stateTracker,
+            long tickIndex,
+            boolean includeObservers
+    ) {
+        ArenaLandmarkCache cache = stateTracker.getLandmarkCache();
+        EntityVelocityTracker velTracker = stateTracker.getVelocityTracker();
+
+        // Pass 1: Scan ArmorStands first so shopkeeper hologram zones are known before checking Players!
         for (Entity ent : level.entitiesForRendering()) {
-            if (ent == self || !ent.isAlive()) continue;
+            if (ent instanceof ArmorStand && ent.isAlive() && ent.distanceToSqr(self) <= 64.0 * 64.0) {
+                cache.observeEntityHologram(ent);
+            }
+        }
+
+        // Pass 2: Players, Shop NPCs, Threats, and Dropped BedWars Resources
+        for (Entity ent : level.entitiesForRendering()) {
+            if (ent == self || !ent.isAlive() || ent instanceof ArmorStand) continue;
             double distSq = ent.distanceToSqr(self);
             if (distSq > 64.0 * 64.0) continue;
 
-            // Shop / Upgrade NPCs -> landmarks!
-            if (isShopNpc(ent)) {
-                if (fr.landmarks.size() < FifthNNSchema.MAX_LANDMARKS_RAW) {
-                    String name = ent.getName().getString().toLowerCase(Locale.ROOT);
-                    int lType = name.contains("upgrade") ? FifthNNSchema.LM_UPGRADE_NPC : FifthNNSchema.LM_SHOP_NPC;
-                    fr.landmarks.add(new FrameData.LandmarkEntry(
-                            lType, 0, (float) ent.getX(), (float) ent.getY(), (float) ent.getZ(), 1
-                    ));
-                }
+            // Shop / Upgrade NPCs (Villagers, Traders, Blazes, Witches, OR fake-player NPCs under shop holograms!)
+            if (isShopNpc(ent, cache)) {
+                String name = BedWarsStateTracker.stripFormatting(ent.getName().getString()).toLowerCase(Locale.ROOT);
+                int lType = name.contains("upgrade") ? FifthNNSchema.LM_UPGRADE_NPC : FifthNNSchema.LM_SHOP_NPC;
+                cache.registerShopNpcPosition(lType, (float) ent.getX(), (float) ent.getY(), (float) ent.getZ());
                 continue;
             }
 
-            // Visible Players
-            if (ent instanceof Player p && includeObservers) {
+            // Real Players (opponents & teammates)
+            if (ent instanceof Player p && !p.isSpectator() && includeObservers) {
+                int enemyTeamId = BedWarsStateTracker.inferTeamIdFromArmor(p);
+                if (enemyTeamId == 0 && p.getTeam() != null) {
+                    enemyTeamId = BedWarsStateTracker.teamColorToTeamId(p.getTeam().getColor());
+                }
+
                 int pFlags = 0;
-                if (isTeammate(self, p)) pFlags |= 1 << 0;
+                if (isTeammate(self, p, fr.ownTeamId, enemyTeamId)) pFlags |= 1 << 0;
                 if (p.onGround()) pFlags |= 1 << 1;
                 if (p.isCrouching()) pFlags |= 1 << 2;
                 if (p.isSprinting()) pFlags |= 1 << 3;
@@ -312,11 +343,10 @@ public final class WorldSnapshotCapture {
                 if (p.isSwinging()) pFlags |= 1 << 5;
                 if (p.hurtTime > 0) pFlags |= 1 << 6;
 
-                Vec3 pv = p.getDeltaMovement();
+                float[] pv = velTracker.computeVelocity(p, tickIndex);
                 int mainCat = classifyItem(p.getMainHandItem());
                 int offCat = classifyItem(p.getOffhandItem());
                 int armorSum = computeArmorSum(p);
-                int enemyTeamId = p.getTeam() != null ? BedWarsStateTracker.teamColorToTeamId(p.getTeam().getColor()) : 0;
 
                 fr.players.add(new FrameData.PlayerEntry(
                         p.getId(),
@@ -324,7 +354,7 @@ public final class WorldSnapshotCapture {
                         enemyTeamId,
                         pFlags,
                         (float) p.getX(), (float) p.getY(), (float) p.getZ(),
-                        (float) pv.x, (float) pv.y, (float) pv.z,
+                        pv[0], pv[1], pv[2],
                         p.getYRot(), p.getXRot(),
                         p.getHealth(),
                         mainCat, offCat, armorSum
@@ -362,18 +392,17 @@ public final class WorldSnapshotCapture {
                 }
 
                 if (tType > 0) {
-                    Vec3 tv = ent.getDeltaMovement();
+                    float[] tv = velTracker.computeVelocity(ent, tickIndex);
                     fr.threats.add(new FrameData.ThreatEntry(
                             tType,
                             (float) ent.getX(), (float) ent.getY(), (float) ent.getZ(),
-                            (float) tv.x, (float) tv.y, (float) tv.z,
+                            tv[0], tv[1], tv[2],
                             extra
                     ));
                 }
             }
         }
 
-        // Sort players & threats closest-first and cap
         fr.players.sort(Comparator.comparingDouble(p ->
                 sq(p.x() - self.getX()) + sq(p.y() - self.getY()) + sq(p.z() - self.getZ())));
         if (fr.players.size() > FifthNNSchema.MAX_PLAYERS_RAW) {
@@ -469,24 +498,24 @@ public final class WorldSnapshotCapture {
         fr.gearTiers[4] = (byte) shears;
         fr.gearTiers[5] = (byte) bow;
 
-        // 16-bit canonical BedWars affordability mask (helps cross-server generalization!)
+        // 16-bit canonical BedWars affordability mask
         int aff = 0;
-        if (iron >= 4) aff |= 1 << 0;   // wool x16
-        if (iron >= 10) aff |= 1 << 1;  // stone sword / pickaxe
-        if (iron >= 20) aff |= 1 << 2;  // shears / chain armor
-        if (iron >= 24) aff |= 1 << 3;  // endstone
-        if (iron >= 40) aff |= 1 << 4;  // fireball / chain armor
-        if (gold >= 3) aff |= 1 << 5;   // gapple
-        if (gold >= 4) aff |= 1 << 6;   // wood planks / TNT (solo)
-        if (gold >= 7) aff |= 1 << 7;   // iron sword
-        if (gold >= 12) aff |= 1 << 8;  // iron armor / bow
-        if (diamond >= 2) aff |= 1 << 9;  // prot I / trap / haste
-        if (diamond >= 4) aff |= 1 << 10; // sharpness I / prot II
-        if (diamond >= 8) aff |= 1 << 11; // prot III
-        if (emerald >= 1) aff |= 1 << 12; // speed / jump potion
-        if (emerald >= 2) aff |= 1 << 13; // invis potion
-        if (emerald >= 4) aff |= 1 << 14; // pearl / obsidian / diamond sword
-        if (emerald >= 6) aff |= 1 << 15; // diamond armor
+        if (iron >= 4) aff |= 1 << 0;
+        if (iron >= 10) aff |= 1 << 1;
+        if (iron >= 20) aff |= 1 << 2;
+        if (iron >= 24) aff |= 1 << 3;
+        if (iron >= 40) aff |= 1 << 4;
+        if (gold >= 3) aff |= 1 << 5;
+        if (gold >= 4) aff |= 1 << 6;
+        if (gold >= 7) aff |= 1 << 7;
+        if (gold >= 12) aff |= 1 << 8;
+        if (diamond >= 2) aff |= 1 << 9;
+        if (diamond >= 4) aff |= 1 << 10;
+        if (diamond >= 8) aff |= 1 << 11;
+        if (emerald >= 1) aff |= 1 << 12;
+        if (emerald >= 2) aff |= 1 << 13;
+        if (emerald >= 4) aff |= 1 << 14;
+        if (emerald >= 6) aff |= 1 << 15;
         fr.affordableMask = aff;
     }
 
@@ -535,7 +564,7 @@ public final class WorldSnapshotCapture {
                 fr.guiItemCat[i] = (byte) classifyItem(st);
                 fr.guiCount[i] = (byte) Math.min(255, st.getCount());
                 int flags = 0;
-                if (!st.isEmpty()) flags |= 1 << 0; // present/clickable
+                if (!st.isEmpty()) flags |= 1 << 0;
                 if (st.isEnchanted()) flags |= 1 << 1;
                 fr.guiFlags[i] = (byte) flags;
             }
@@ -588,7 +617,6 @@ public final class WorldSnapshotCapture {
         if (b instanceof BedBlock) {
             cat = FifthNNSchema.BLOCK_BED_ENEMY;
             breakable = true;
-            // Best-effort own-bed color match when team color is known
             if (ownTeamId > 0 && matchesTeamBedColor(path, ownTeamId)) {
                 cat = FifthNNSchema.BLOCK_BED_OWN;
                 breakable = false;
@@ -707,15 +735,30 @@ public final class WorldSnapshotCapture {
         return FifthNNSchema.ITEM_OTHER_ITEM;
     }
 
-    private static boolean isTeammate(LocalPlayer self, Player other) {
+    private static boolean isTeammate(LocalPlayer self, Player other, int ownTeamId) {
+        int otherTeam = BedWarsStateTracker.inferTeamIdFromArmor(other);
+        return isTeammate(self, other, ownTeamId, otherTeam);
+    }
+
+    private static boolean isTeammate(LocalPlayer self, Player other, int ownTeamId, int otherTeamId) {
+        if (ownTeamId > 0 && otherTeamId > 0) {
+            return ownTeamId == otherTeamId;
+        }
         return self.getTeam() != null && self.getTeam().equals(other.getTeam());
     }
 
-    private static boolean isShopNpc(Entity ent) {
+    private static boolean isShopNpc(Entity ent, ArenaLandmarkCache cache) {
         if (ent instanceof Villager) return true;
+        String typeId = BuiltInRegistries.ENTITY_TYPE.getKey(ent.getType()).getPath();
+        if (typeId.equals("wandering_trader") || typeId.equals("blaze") || typeId.equals("witch") || typeId.equals("pillager")) {
+            return true;
+        }
         if (ent instanceof Player p) {
-            String n = p.getName().getString().toLowerCase(Locale.ROOT);
-            return n.contains("shop") || n.contains("upgrade") || n.contains("item");
+            if (cache != null && cache.isNearShopNpcHologram(p.getX(), p.getY(), p.getZ())) {
+                return true;
+            }
+            String n = BedWarsStateTracker.stripFormatting(p.getName().getString()).toLowerCase(Locale.ROOT);
+            return n.contains("shop") || n.contains("upgrade") || n.contains("cit-") || n.contains(" ") || n.startsWith("[");
         }
         return false;
     }

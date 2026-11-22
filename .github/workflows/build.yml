@@ -27,13 +27,29 @@ jobs:
       - name: Build 5ifthNN Mod JAR
         run: ./gradlew build --stacktrace
 
+      - name: Diagnostic MC 26.3 Class Dump (on failure only)
+        if: failure()
+        run: |
+          MC_JAR=$(find .gradle ~/.gradle -name "*minecraft*26.3*.jar" 2>/dev/null | head -n 1)
+          echo "MC_JAR=$MC_JAR"
+          if [ -n "$MC_JAR" ]; then
+            echo "--- MouseHandler ---"
+            javap -p -cp "$MC_JAR" net.minecraft.client.MouseHandler | head -n 45 || true
+            echo "--- MultiPlayerGameMode ---"
+            javap -p -cp "$MC_JAR" net.minecraft.client.multiplayer.MultiPlayerGameMode | head -n 60 || true
+            echo "--- DyedItemColor ---"
+            javap -p -cp "$MC_JAR" net.minecraft.world.item.component.DyedItemColor || true
+            echo "--- ClientLevel isLoaded ---"
+            javap -p -cp "$MC_JAR" net.minecraft.world.level.Level | grep -i loaded || true
+          fi
+
       - name: Verify Mixin Targets in MC 26.3 Bytecode
         run: |
           MC_JAR=$(find .gradle ~/.gradle -name "*minecraft*26.3*.jar" 2>/dev/null | head -n 1)
           echo "Verifying mixins against $MC_JAR"
           javap -p -cp "$MC_JAR" net.minecraft.client.KeyMapping | grep -E "clickCount"
-          javap -p -cp "$MC_JAR" net.minecraft.client.MouseHandler | grep -E "accumulatedDX|accumulatedDY|turnPlayer"
-          javap -p -cp "$MC_JAR" net.minecraft.client.multiplayer.MultiPlayerGameMode | grep -E "handleContainerInput"
+          javap -p -cp "$MC_JAR" net.minecraft.client.MouseHandler | grep -E "minecraft|accumulatedDX|accumulatedDY|turnPlayer"
+          javap -p -cp "$MC_JAR" net.minecraft.client.multiplayer.MultiPlayerGameMode | grep -E "handleContainerInput|destroyProgress|attack\("
           javap -p -cp "$MC_JAR" net.minecraft.client.sounds.SoundEngine | grep -E "play\("
 
       - name: Upload 5ifthNN Mod Artifact
@@ -60,12 +76,14 @@ jobs:
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install numpy onnx onnxscript onnxruntime matplotlib tqdm
 
-      - name: Run Schema, Binary I/O & Mirror Tests
+      - name: Run Schema v1/v2, Binary I/O, Audit & Visualizer Tests
         working-directory: python
-        run: PYTHONPATH=. python3 tests/test_schema_and_io.py
+        run: |
+          PYTHONPATH=. python3 tests/test_schema_and_io.py
+          PYTHONPATH=. python3 tests/test_end_to_end_pipeline.py
 
-      - name: Smoke-test Model Parameter Count & ONNX Export Parity
+      - name: Smoke-test Model Parameter Count & ONNX FP32 + INT8 Export Parity
         working-directory: python
         run: |
           PYTHONPATH=. python3 -m fifthnn.model
-          PYTHONPATH=. python3 -m fifthnn.export_onnx --random_init --out /tmp/smoke_test.onnx
+          PYTHONPATH=. python3 -m fifthnn.export_onnx --random_init --out /tmp/smoke_test.onnx --quantize_int8

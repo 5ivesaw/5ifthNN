@@ -123,6 +123,10 @@ public final class AiController {
         return engine;
     }
 
+    public HumanActionExecutor getExecutor() {
+        return executor;
+    }
+
     public void onClientTick(Minecraft mc, FrameData frame, boolean takeoverKeyHeld) {
         if (mode == FifthNNSchema.AiControlMode.OFF) {
             takeoverActive = false;
@@ -151,6 +155,10 @@ public final class AiController {
             return;
         }
 
+        String srvProfile = "auto".equalsIgnoreCase(config.serverProfile)
+                ? io.fifthnn.recorder.BedWarsStateTracker.detectServerProfile(mc)
+                : config.serverProfile;
+
         // HG-DAgger Live Human Takeover: holding takeover key immediately yields 100% control to human
         if (takeoverKeyHeld) {
             if (!takeoverActive) {
@@ -158,14 +166,14 @@ public final class AiController {
                 takeoverActive = true;
             }
             // Still step hidden states passively so memory stays synced when human releases control!
-            var feats = FeatureEncoder.encode(frame, FifthNNSchema.serverProfileToId(config.serverProfile), config.pvpMode18);
+            var feats = FeatureEncoder.encode(frame, FifthNNSchema.serverProfileToId(srvProfile), config.pvpMode18);
             engine.infer(feats, frame.guiType > 0, frame.guiSlotCount, config.samplingTemperature, false);
             return;
         }
         takeoverActive = false;
 
         // Run Pure NN forward pass
-        var feats = FeatureEncoder.encode(frame, FifthNNSchema.serverProfileToId(config.serverProfile), config.pvpMode18);
+        var feats = FeatureEncoder.encode(frame, FifthNNSchema.serverProfileToId(srvProfile), config.pvpMode18);
         var decision = engine.infer(
                 feats,
                 frame.guiType > 0,

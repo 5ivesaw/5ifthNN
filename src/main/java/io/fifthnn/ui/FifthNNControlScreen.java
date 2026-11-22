@@ -18,7 +18,7 @@ import java.util.List;
  * for selecting Phase 1 recording modes/tags and controlling Phase 2 ONNX inference & guardrails.
  */
 public final class FifthNNControlScreen extends Screen {
-    private static final String[] SERVER_PROFILES = {"local", "pika", "hypixel", "custom"};
+    private static final String[] SERVER_PROFILES = {"auto", "local", "pika", "jartex", "mineberry", "hypixel", "custom"};
 
     private final FifthNNConfig config;
     private final DatasetRecorderManager recorder;
@@ -175,29 +175,38 @@ public final class FifthNNControlScreen extends Screen {
         ).bounds(colL, y, bw, bh).build());
 
         addRenderableWidget(Button.builder(
+                Component.literal("Mouse GCD Smooth: " + (config.enableMouseGcdSmoothing ? "§aON" : "§7OFF")),
+                btn -> {
+                    config.enableMouseGcdSmoothing = !config.enableMouseGcdSmoothing;
+                    config.save();
+                    rebuildWidgets();
+                }
+        ).bounds(colR, y, bw, bh).build());
+
+        y += 26;
+        addRenderableWidget(Button.builder(
                 Component.literal(String.format("Temp: §e%.2f", config.samplingTemperature)),
                 btn -> {
                     config.samplingTemperature = (config.samplingTemperature >= 1.15f) ? 0.50f : (config.samplingTemperature + 0.15f);
                     config.save();
                     rebuildWidgets();
                 }
-        ).bounds(colR, y, bw, bh).build());
+        ).bounds(colL, y, bw, bh).build());
 
-        y += 30;
         addRenderableWidget(Button.builder(
-                Component.literal("§c⚠ EMERGENCY STOP AI (F10)"),
+                Component.literal("§c⚠ STOP AI (F10)"),
                 btn -> {
                     if (this.minecraft != null) {
                         ai.emergencyStop(this.minecraft, "GUI Emergency Stop");
                         rebuildWidgets();
                     }
                 }
-        ).bounds(colL, y, 210, bh).build());
+        ).bounds(colR, y, 100, bh).build());
 
         addRenderableWidget(Button.builder(
                 Component.literal("Done"),
                 btn -> onClose()
-        ).bounds(colL + 220, y, 90, bh).build());
+        ).bounds(colR + 104, y, 46, bh).build());
     }
 
     @Override

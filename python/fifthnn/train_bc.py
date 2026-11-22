@@ -1,13 +1,13 @@
 """
-Phase 2A: Behavior Cloning (BC) & HG-DAgger Trainer for 5ifthNN (Colab L4 ready).
+Phase 2A: Behavior Cloning (BC) & HG-DAgger Trainer for 5ifthNN (Colab L4 ready, v0.2).
 
-Features:
-  - Truncated BPTT over 128-tick windows (6.4 s) for Two-Timescale GRU training
-  - Automatic Left-Right Mirror Augmentation (2x free dataset!)
-  - Event Oversampling (Shop 4x, Bed-break / Edge-clutch 5x, Combat 2x, DAgger takeover 3x)
-  - Mu-Law categorical Cross-Entropy for crisp human-like camera aim
-  - Masked GUI slot Cross-Entropy (only trained when GUI is open)
-  - Auxiliary danger/HP-delta loss to accelerate spatial convergence on small datasets (1-5 hrs)
+Upgrades in v0.2:
+  - Contiguous Segment Splitting: NEVER bridges a 128-tick BPTT window across lobby gaps,
+    server teleports, or episode boundaries (prevents GRU hidden-state corruption!).
+  - Automatic Episode-Level Train/Validation Split + Per-Head Accuracy Telemetry
+    (Move F1, Aim ±1-bin Acc, Combat Acc, GUI Slot Acc).
+  - Exact Left-Right Mirror Augmentation (2x free dataset!).
+  - Event Oversampling (Shop 4x, Bed-break 5x, Combat 2x, DAgger takeover 3x).
 """
 
 from __future__ import annotations
@@ -21,10 +21,10 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 
+from .audit import split_contiguous_segments
 from .dataset_io import FrameRecord, read_recording
 from .features import encode_frame_obs, encode_frame_targets
 from .model import FifthNNModel, count_parameters
@@ -38,32 +38,28 @@ from .schema import (
 
 
 class BedWarsSequenceDataset(Dataset):
-    """Slices verified .5nn.gz recordings into overlapping temporal windows with mirror aug."""
+    """Slices contiguous in-game segments into BPTT windows with mirror augmentation."""
 
     def __init__(
         self,
-        recording_paths: List[str],
+        segments: List[Tuple[Dict, List[FrameRecord]]],
         seq_len: int = 128,
         stride: int = 64,
         mirror_aug: bool = True,
     ):
         self.seq_len = seq_len
+        self.segments = segments
         self.samples: List[Tuple[int, int, bool, float]] = []
-        self.episodes: List[Tuple[Dict, List[FrameRecord]]] = []
 
-        for path in recording_paths:
-            header, frames = read_recording(path, valid_only=True)
+        for seg_idx, (_, frames) in enumerate(segments):
             if len(frames) < seq_len + 2:
                 continue
-            ep_idx = len(self.episodes)
-            self.episodes.append((header, frames))
-
             for start in range(0, len(frames) - seq_len - 1, stride):
                 window = frames[start : start + seq_len]
                 weight = self._compute_window_weight(window)
-                self.samples.append((ep_idx, start, False, weight))
+                self.samples.append((seg_idx, start, False, weight))
                 if mirror_aug:
-                    self.samples.append((ep_idx, start, True, weight))
+                    self.samples.append((seg_idx, start, True, weight))
 
     @staticmethod
     def _compute_window_weight(window: List[FrameRecord]) -> float:
@@ -87,8 +83,8 @@ class BedWarsSequenceDataset(Dataset):
         return len(self.samples)
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
-        ep_idx, start, mirror, weight = self.samples[idx]
-        header, frames = self.episodes[ep_idx]
+        seg_idx, start, mirror, weight = self.samples[idx]
+        header, frames = self.segments[seg_idx]
         pvp18 = header.get("pvpMode", "1.8") == "1.8"
         srv_id = hash(header.get("serverProfile", "local")) & 0x7
 
@@ -115,7 +111,6 @@ class BedWarsSequenceDataset(Dataset):
             gui_list.append(tgt["gui_action"])
             gui_open_list.append(tgt["gui_open"])
 
-            # Auxiliary targets: [1s future void/fall danger, 1s normalized HP delta]
             danger = 1.0 if (fr_next.y < fr.y - 4.0 or fr_next.hp < fr.hp - 2.0) else 0.0
             hp_delta = max(-1.0, min(1.0, (fr_next.hp - fr.hp) / 20.0))
             aux_list.append([danger, hp_delta])
@@ -138,7 +133,7 @@ class BedWarsSequenceDataset(Dataset):
 
 
 def compute_bc_loss(out: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]) -> Tuple[torch.Tensor, Dict[str, float]]:
-    w = batch["sample_weight"].unsqueeze(1)  # (B, 1)
+    w = batch["sample_weight"].unsqueeze(1)
 
     loss_move = (F.binary_cross_entropy_with_logits(out["move_logits"], batch["move"], reduction="none").mean(dim=-1) * w).mean()
     loss_yaw = (F.cross_entropy(out["yaw_logits"].transpose(1, 2), batch["yaw_bin"], reduction="none") * w).mean()
@@ -147,12 +142,10 @@ def compute_bc_loss(out: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]
     loss_right = (F.cross_entropy(out["right_logits"].transpose(1, 2), batch["right_state"], reduction="none") * w).mean()
     loss_hotbar = (F.cross_entropy(out["hotbar_logits"].transpose(1, 2), batch["hotbar"], reduction="none") * w).mean()
 
-    # Masked GUI loss: only supervise GUI slot head on ticks where a GUI is actually open
     gui_mask = batch["gui_open"] * w
     gui_ce = F.cross_entropy(out["gui_logits"].transpose(1, 2), batch["gui_action"], reduction="none")
     loss_gui = (gui_ce * gui_mask).sum() / (gui_mask.sum() + 1e-6)
 
-    # Auxiliary danger + HP-delta prediction loss
     loss_aux = torch.tensor(0.0, device=loss_move.device)
     if "aux" in out:
         aux_pred = out["aux"]
@@ -171,24 +164,43 @@ def compute_bc_loss(out: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]
         + 1.5 * loss_gui
         + loss_aux
     )
+
+    with torch.no_grad():
+        move_pred = (torch.sigmoid(out["move_logits"]) >= 0.5).float()
+        move_acc = float((move_pred == batch["move"]).float().mean().item())
+        yaw_pred = out["yaw_logits"].argmax(dim=-1)
+        aim_close = float(((yaw_pred - batch["yaw_bin"]).abs() <= 1).float().mean().item())
+        left_acc = float((out["left_logits"].argmax(dim=-1) == batch["left_state"]).float().mean().item())
+
     metrics = {
         "total": float(total.item()),
-        "move": float(loss_move.item()),
-        "aim": float((loss_yaw + loss_pitch).item()),
-        "combat": float((loss_left + loss_right).item()),
-        "gui": float(loss_gui.item()),
+        "move_acc": move_acc,
+        "aim_pm1": aim_close,
+        "combat_acc": left_acc,
+        "gui_loss": float(loss_gui.item()),
     }
     return total, metrics
 
 
+def load_all_segments(recording_paths: List[str], min_len: int) -> List[Tuple[Dict, List[FrameRecord]]]:
+    all_segs: List[Tuple[Dict, List[FrameRecord]]] = []
+    for path in recording_paths:
+        header, frames = read_recording(path, valid_only=False)
+        for seg in split_contiguous_segments(frames):
+            if len(seg) >= min_len:
+                all_segs.append((header, seg))
+    return all_segs
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Train 5ifthNN via Behavior Cloning / HG-DAgger")
+    parser = argparse.ArgumentParser(description="Train 5ifthNN via Behavior Cloning / HG-DAgger (v0.2)")
     parser.add_argument("--data_dir", type=str, required=True, help="Folder containing .5nn.gz recordings")
     parser.add_argument("--out", type=str, default="checkpoints/fifthnn_bc.pt")
     parser.add_argument("--resume", type=str, default=None, help="Optional checkpoint to fine-tune (e.g. HG-DAgger)")
-    parser.add_argument("--epochs", type=int, default=20)
+    parser.add_argument("--epochs", type=int, default=25)
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--seq_len", type=int, default=128)
+    parser.add_argument("--val_ratio", type=float, default=0.1)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
@@ -202,8 +214,20 @@ def main() -> None:
     if not files:
         raise FileNotFoundError(f"No .5nn or .5nn.gz recordings found in {args.data_dir}")
 
-    ds = BedWarsSequenceDataset(files, seq_len=args.seq_len, stride=args.seq_len // 2, mirror_aug=True)
-    loader = DataLoader(ds, batch_size=args.batch_size, shuffle=True, num_workers=2, pin_memory=True, drop_last=True)
+    segments = load_all_segments(files, min_len=args.seq_len + 2)
+    if not segments:
+        raise RuntimeError(f"No contiguous in-game segments >= {args.seq_len + 2} ticks found.")
+
+    random.shuffle(segments)
+    val_count = max(1, int(len(segments) * args.val_ratio)) if len(segments) >= 5 else 0
+    val_segs = segments[:val_count]
+    train_segs = segments[val_count:]
+
+    train_ds = BedWarsSequenceDataset(train_segs, seq_len=args.seq_len, stride=args.seq_len // 2, mirror_aug=True)
+    val_ds = BedWarsSequenceDataset(val_segs, seq_len=args.seq_len, stride=args.seq_len, mirror_aug=False) if val_segs else None
+
+    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=2, pin_memory=True, drop_last=len(train_ds) >= args.batch_size)
+    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=2, pin_memory=True) if val_ds and len(val_ds) > 0 else None
 
     model = FifthNNModel(include_aux=True).to(device)
     if args.resume:
@@ -211,21 +235,24 @@ def main() -> None:
         model.load_state_dict(ckpt["model_state_dict"], strict=False)
         print(f"Resumed weights from {args.resume}")
 
-    print(f"5ifthNN BC Trainer | Device: {device} | Params: {count_parameters(model):,} | Windows: {len(ds)} from {len(files)} files")
+    print(
+        f"5ifthNN BC Trainer v0.2 | Device={device} | Params={count_parameters(model):,} | "
+        f"TrainWin={len(train_ds)} ValWin={len(val_ds) if val_ds else 0} | Segments={len(segments)} from {len(files)} files"
+    )
 
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max(1, args.epochs))
     scaler = torch.amp.GradScaler("cuda", enabled=(device.type == "cuda"))
 
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-    best_loss = math.inf
+    best_metric = math.inf
 
     for epoch in range(1, args.epochs + 1):
         model.train()
-        agg = {"total": 0.0, "move": 0.0, "aim": 0.0, "combat": 0.0, "gui": 0.0}
+        agg = {"total": 0.0, "move_acc": 0.0, "aim_pm1": 0.0, "combat_acc": 0.0, "gui_loss": 0.0}
         steps = 0
 
-        for batch in loader:
+        for batch in train_loader:
             batch = {k: v.to(device, non_blocking=True) for k, v in batch.items()}
             b = batch["scalar_obs"].shape[0]
             h_fast, h_slow = model.init_hidden(b, device)
@@ -248,22 +275,46 @@ def main() -> None:
             steps += 1
 
         sched.step()
-        avg = {k: v / max(1, steps) for k, v in agg.items()}
-        print(f"Epoch {epoch:02d}/{args.epochs} | loss={avg['total']:.4f} move={avg['move']:.4f} aim={avg['aim']:.4f} combat={avg['combat']:.4f} gui={avg['gui']:.4f}")
+        tr = {k: v / max(1, steps) for k, v in agg.items()}
 
-        if avg["total"] < best_loss:
-            best_loss = avg["total"]
+        val_str = ""
+        track_loss = tr["total"]
+        if val_loader is not None:
+            model.eval()
+            v_agg = {"total": 0.0, "move_acc": 0.0, "aim_pm1": 0.0}
+            v_steps = 0
+            with torch.no_grad():
+                for vb in val_loader:
+                    vb = {k: v.to(device, non_blocking=True) for k, v in vb.items()}
+                    hf, hs = model.init_hidden(vb["scalar_obs"].shape[0], device)
+                    vout, _, _ = model.forward_sequence(vb["voxel_cats"], vb["voxel_flags"], vb["scalar_obs"], hf, hs)
+                    _, vm = compute_bc_loss(vout, vb)
+                    for k in v_agg:
+                        v_agg[k] += vm[k]
+                    v_steps += 1
+            va = {k: v / max(1, v_steps) for k, v in v_agg.items()}
+            track_loss = va["total"]
+            val_str = f" || VAL loss={va['total']:.4f} move={va['move_acc']*100:.1f}% aim±1={va['aim_pm1']*100:.1f}%"
+
+        print(
+            f"Epoch {epoch:02d}/{args.epochs} | TR loss={tr['total']:.4f} "
+            f"move={tr['move_acc']*100:.1f}% aim±1={tr['aim_pm1']*100:.1f}% "
+            f"cmb={tr['combat_acc']*100:.1f}% gui={tr['gui_loss']:.3f}{val_str}"
+        )
+
+        if track_loss < best_metric:
+            best_metric = track_loss
             torch.save(
                 {
-                    "schema_version": 1,
+                    "schema_version": 2,
                     "epoch": epoch,
-                    "best_loss": best_loss,
+                    "best_loss": best_metric,
                     "model_state_dict": model.state_dict(),
                 },
                 args.out,
             )
 
-    print(f"Saved best BC checkpoint to {args.out} (loss={best_loss:.4f})")
+    print(f"Saved best BC checkpoint to {args.out} (best_loss={best_metric:.4f})")
 
 
 if __name__ == "__main__":

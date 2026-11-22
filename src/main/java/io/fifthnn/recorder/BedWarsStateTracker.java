@@ -2,8 +2,14 @@ package io.fifthnn.recorder;
 
 import io.fifthnn.schema.FifthNNSchema;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.multiplayer.ServerData;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.world.entity.EquipmentSlot;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.component.DyedItemColor;
 import net.minecraft.world.scores.DisplaySlot;
 import net.minecraft.world.scores.Objective;
 import net.minecraft.world.scores.PlayerScoreEntry;
@@ -16,13 +22,18 @@ import java.util.Optional;
 import java.util.Set;
 
 /**
- * Tracks live BedWars match state, player-placed blocks, one-time milestone rewards,
- * chat/scoreboard events, and server TPS across PikaNetwork, Hypixel, and local BedWars plugins.
+ * Tracks live BedWars match state, multi-game episode segmentation, auto server/map detection,
+ * dyed leather team colors, teleport/lobby failsafe tagging, and anti-loophole milestone rewards
+ * across PikaNetwork, Jartex, Mineberry, Hypixel, and local BedWars servers.
  */
 public final class BedWarsStateTracker {
     private final Set<Long> playerPlacedBlocks = new HashSet<>(4096);
+    private final ArenaLandmarkCache landmarkCache = new ArenaLandmarkCache();
+    private final EntityVelocityTracker velocityTracker = new EntityVelocityTracker();
 
+    private int episodeId = 1;
     private int matchPhase = FifthNNSchema.MATCH_PHASE_IN_GAME;
+    private int prevMatchPhase = FifthNNSchema.MATCH_PHASE_UNKNOWN;
     private int ownTeamId = 0;
     private int ownBedAlive = 1;
     private int enemyBedsAliveMask = 0x7F;
@@ -33,6 +44,7 @@ public final class BedWarsStateTracker {
     private int matchElapsedTicks = 0;
 
     private String detectedMapName = "unknown";
+    private String detectedServerProfile = "local";
     private float homeX, homeY, homeZ;
     private boolean hasHomeSpawn = false;
 
@@ -41,11 +53,20 @@ public final class BedWarsStateTracker {
 
     private float prevHp = 20.0f;
     private boolean wasDead = false;
+    private double prevSelfX, prevSelfY, prevSelfZ;
+    private boolean hasPrevSelfPos = false;
     private long lastTickWallMs = 0L;
     private float serverTpsEst = 20.0f;
+    private boolean lastFrameValidInGame = false;
 
-    public synchronized void resetForNewMatch() {
+    public synchronized void resetForNewMatch(boolean incrementEpisode) {
+        if (incrementEpisode) {
+            episodeId++;
+        }
         playerPlacedBlocks.clear();
+        landmarkCache.reset();
+        velocityTracker.clear();
+        ownTeamId = 0;
         ownBedAlive = 1;
         enemyBedsAliveMask = 0x7F;
         enemiesAliveCount = 7;
@@ -54,8 +75,13 @@ public final class BedWarsStateTracker {
         emeraldTier = 1;
         matchElapsedTicks = 0;
         hasHomeSpawn = false;
+        hasPrevSelfPos = false;
         pendingEventFlags = 0;
         pendingReward = 0.0f;
+    }
+
+    public synchronized void resetForNewMatch() {
+        resetForNewMatch(true);
     }
 
     public synchronized void markBlockPlaced(BlockPos pos) {
@@ -69,7 +95,7 @@ public final class BedWarsStateTracker {
     }
 
     public synchronized boolean isTrackedPlayerPlaced(BlockPos pos) {
-        return playerPlacedBlocks.contains(pos.asLong());
+        return playerPlacedBlocks.contains(pos.asLong()) || landmarkCache.isInferredPlayerPlaced(pos);
     }
 
     public synchronized void markItemBought() {
@@ -80,54 +106,74 @@ public final class BedWarsStateTracker {
         pendingEventFlags |= FifthNNSchema.EVT_DAMAGE_DEALT;
     }
 
+    public ArenaLandmarkCache getLandmarkCache() {
+        return landmarkCache;
+    }
+
+    public EntityVelocityTracker getVelocityTracker() {
+        return velocityTracker;
+    }
+
     /**
-     * Parse system/game chat messages (works across BedWars1058, ScreamingBedWars, Hypixel, PikaNetwork).
+     * Parse system/game chat & actionbar messages across Pika, Jartex, Mineberry, Hypixel, and Paper plugins.
      */
     public synchronized void onChatMessage(String rawText, String selfName) {
         if (rawText == null || rawText.isEmpty()) return;
-        String lower = stripFormatting(rawText).toLowerCase(Locale.ROOT);
+        String clean = stripFormatting(rawText);
+        String lower = clean.toLowerCase(Locale.ROOT);
+        // Strip server prefix such as "BedWars ▸ " on Mineberry/Jartex so "bedwars" never triggers bed-break rules
+        String body = lower.contains("▸") ? lower.substring(lower.indexOf('▸') + 1).trim() : lower;
         String selfLower = selfName != null ? selfName.toLowerCase(Locale.ROOT) : "";
 
-        // Match start / lobby detection
-        if (lower.contains("protect your bed and destroy the enemy beds")
-                || lower.contains("game has started")
-                || lower.contains("bed wars")) {
-            if (lower.contains("protect your bed")) {
-                resetForNewMatch();
-                matchPhase = FifthNNSchema.MATCH_PHASE_IN_GAME;
-            }
-        }
-        if (lower.contains("waiting for players") || lower.contains("the game starts in")) {
+        // Hub / Waiting lobby cues
+        if (body.contains("server selector") || body.contains("waiting for players")
+                || body.contains("the game starts in") || body.contains("game starting in")) {
             matchPhase = FifthNNSchema.MATCH_PHASE_LOBBY;
         }
-        if (lower.contains("victory!") || lower.contains("won the game")) {
+
+        // Match start cues -> cleanly increment episodeId and wipe stale arena landmarks!
+        if (body.contains("protect your bed") || body.contains("destroy the enemy beds")
+                || body.contains("the game has started") || body.contains("all generators are now active")) {
+            resetForNewMatch(true);
+            matchPhase = FifthNNSchema.MATCH_PHASE_IN_GAME;
+        }
+
+        // Map name from chat ("Map: Rooftop" or "Playing on Rooftop")
+        if (body.startsWith("map:")) {
+            String m = clean.substring(clean.toLowerCase(Locale.ROOT).indexOf("map:") + 4).trim();
+            if (!m.isEmpty()) detectedMapName = m;
+        }
+
+        // Victory / Loss cues
+        if (body.contains("victory!") || body.equals("victory") || body.contains("won the game")) {
             matchPhase = FifthNNSchema.MATCH_PHASE_POST_GAME;
-            if (!selfLower.isEmpty() && lower.contains(selfLower)) {
+            if (body.contains("victory") || (!selfLower.isEmpty() && body.contains(selfLower))) {
                 pendingEventFlags |= FifthNNSchema.EVT_GAME_WON;
                 pendingReward += 5.0f;
             }
         }
-        if (lower.contains("game over!") || lower.contains("you have been eliminated")) {
+        if (body.contains("game over!") || body.contains("you have been eliminated")) {
             matchPhase = FifthNNSchema.MATCH_PHASE_SPECTATING;
             pendingEventFlags |= FifthNNSchema.EVT_GAME_LOST;
             pendingReward -= 5.0f;
         }
 
-        // Bed break events (one-time irreversible milestones)
-        if (lower.contains("bed destruction") || lower.contains("bed was destroyed") || lower.contains("bed has been destroyed")) {
-            if (lower.contains("your bed")) {
+        // Bed destruction events (one-time irreversible milestones)
+        if (body.contains("bed") && (body.contains("destroyed") || body.contains("broken"))) {
+            if (body.contains("your bed")) {
                 ownBedAlive = 0;
                 pendingEventFlags |= FifthNNSchema.EVT_OWN_BED_LOST;
                 pendingReward -= 1.5f;
-            } else if (!selfLower.isEmpty() && lower.contains(selfLower)) {
+            } else if (!selfLower.isEmpty() && body.contains("by " + selfLower)) {
                 pendingEventFlags |= FifthNNSchema.EVT_BED_BROKEN_BY_ME;
                 pendingReward += 2.0f;
             }
         }
 
-        // Kill / final kill events
-        if (!selfLower.isEmpty() && (lower.contains("killed by " + selfLower) || lower.contains("knocked into the void by " + selfLower))) {
-            if (lower.contains("final kill")) {
+        // Kill / Final kill events
+        if (!selfLower.isEmpty() && !body.contains("bed")
+                && (body.contains("by " + selfLower))) {
+            if (body.contains("final kill")) {
                 pendingEventFlags |= FifthNNSchema.EVT_FINAL_KILL;
                 pendingReward += 1.5f;
             } else {
@@ -137,17 +183,69 @@ public final class BedWarsStateTracker {
         }
 
         // Upgrades & generator tiers
-        if (lower.contains("sharpened swords")) teamUpgrades[0] = (byte) Math.min(4, teamUpgrades[0] + 1);
-        if (lower.contains("reinforced armor")) teamUpgrades[1] = (byte) Math.min(4, teamUpgrades[1] + 1);
-        if (lower.contains("maniac miner")) teamUpgrades[2] = (byte) Math.min(4, teamUpgrades[2] + 1);
-        if (lower.contains("iron forge") || lower.contains("gold forge") || lower.contains("molten forge")) {
-            teamUpgrades[3] = (byte) Math.min(4, teamUpgrades[3] + 1);
+        if (body.contains("sharpened swords") || body.contains("sharpness")) {
+            if (body.contains("purchased") || body.contains("bought")) {
+                teamUpgrades[0] = (byte) Math.min(4, teamUpgrades[0] + 1);
+            }
         }
-        if (lower.contains("purchased") && lower.contains("trap")) teamUpgrades[4] = (byte) Math.min(3, teamUpgrades[4] + 1);
-        if (lower.contains("diamond generators have been upgraded to tier ii")) diamondTier = 2;
-        if (lower.contains("diamond generators have been upgraded to tier iii")) diamondTier = 3;
-        if (lower.contains("emerald generators have been upgraded to tier ii")) emeraldTier = 2;
-        if (lower.contains("emerald generators have been upgraded to tier iii")) emeraldTier = 3;
+        if (body.contains("reinforced armor") || body.contains("protection")) {
+            if (body.contains("purchased") || body.contains("bought")) {
+                teamUpgrades[1] = (byte) Math.min(4, teamUpgrades[1] + 1);
+            }
+        }
+        if (body.contains("maniac miner") || body.contains("haste")) {
+            if (body.contains("purchased") || body.contains("bought")) {
+                teamUpgrades[2] = (byte) Math.min(2, teamUpgrades[2] + 1);
+            }
+        }
+        if (body.contains("iron forge") || body.contains("gold forge") || body.contains("molten forge")) {
+            if (body.contains("purchased") || body.contains("bought")) {
+                teamUpgrades[3] = (byte) Math.min(4, teamUpgrades[3] + 1);
+            }
+        }
+        if (body.contains("trap") && (body.contains("purchased") || body.contains("bought"))) {
+            teamUpgrades[4] = (byte) Math.min(3, teamUpgrades[4] + 1);
+        }
+        if (body.contains("diamond") && body.contains("tier ii")) diamondTier = 2;
+        if (body.contains("diamond") && body.contains("tier iii")) diamondTier = 3;
+        if (body.contains("emerald") && body.contains("tier ii")) emeraldTier = 2;
+        if (body.contains("emerald") && body.contains("tier iii")) emeraldTier = 3;
+    }
+
+    /**
+     * Pre-tick state detection (runs BEFORE voxel/entity capture so ownTeamId and isInGame are
+     * already accurate for bed classification, landmark scanning, and player-placed tracking!).
+     */
+    public synchronized void preCaptureUpdate(Minecraft mc, LocalPlayer player) {
+        detectedServerProfile = detectServerProfile(mc);
+        parseScoreboard(mc, player);
+
+        // Prefer dyed leather armor RGB (works on Pika/Jartex/Mineberry/Hypixel even when scoreboard team is GRAY!)
+        int armorTeam = inferTeamIdFromArmor(player);
+        if (armorTeam > 0) {
+            ownTeamId = armorTeam;
+        } else if (ownTeamId == 0 && player.getTeam() != null) {
+            ownTeamId = teamColorToTeamId(player.getTeam().getColor());
+        }
+
+        // Multi-signal Hub / Waiting-Box detection (learned directly from real Pika/Jartex/Mineberry logs!)
+        boolean looksLikeHubOrWaiting = isInHubOrWaitingLobby(player);
+        if (looksLikeHubOrWaiting) {
+            matchPhase = FifthNNSchema.MATCH_PHASE_LOBBY;
+        } else if (matchPhase == FifthNNSchema.MATCH_PHASE_LOBBY && hasBedWarsGearOrBlocks(player)) {
+            // Clean transition from waiting box / hub into live BedWars match!
+            resetForNewMatch(true);
+            matchPhase = FifthNNSchema.MATCH_PHASE_IN_GAME;
+            ownTeamId = inferTeamIdFromArmor(player);
+        }
+
+        // Detect transition from POST_GAME / SPECTATING back to a brand-new live match
+        if ((prevMatchPhase == FifthNNSchema.MATCH_PHASE_POST_GAME || prevMatchPhase == FifthNNSchema.MATCH_PHASE_SPECTATING)
+                && matchPhase == FifthNNSchema.MATCH_PHASE_IN_GAME && !player.isSpectator() && player.isAlive()) {
+            resetForNewMatch(true);
+            ownTeamId = inferTeamIdFromArmor(player);
+        }
+        prevMatchPhase = matchPhase;
     }
 
     public synchronized void tickAndFillFrame(Minecraft mc, LocalPlayer player, FrameData fr, boolean autoTagLobby) {
@@ -163,11 +261,23 @@ public final class BedWarsStateTracker {
         lastTickWallMs = now;
         fr.serverTpsEst = serverTpsEst;
 
-        // Parse scoreboard sidebar for team color, map name, bed counts, and lobby heuristics
-        parseScoreboard(mc, player);
-        if (ownTeamId == 0 && player.getTeam() != null) {
-            ownTeamId = teamColorToTeamId(player.getTeam().getColor());
+        // Detect sudden server teleport (> 6 blocks in 1 tick: respawn, queue warp, rubberband)
+        boolean teleportedThisTick = false;
+        if (hasPrevSelfPos) {
+            double jumpDist = Math.sqrt(
+                    sq(player.getX() - prevSelfX) + sq(player.getY() - prevSelfY) + sq(player.getZ() - prevSelfZ)
+            );
+            if (jumpDist > 6.0) {
+                teleportedThisTick = true;
+                // Zero out fake 180-deg rotation snap caused by server teleport so BC aim never gets poisoned!
+                fr.deltaYaw = 0.0f;
+                fr.deltaPitch = 0.0f;
+            }
         }
+        prevSelfX = player.getX();
+        prevSelfY = player.getY();
+        prevSelfZ = player.getZ();
+        hasPrevSelfPos = true;
 
         if (!hasHomeSpawn && matchPhase == FifthNNSchema.MATCH_PHASE_IN_GAME && player.isAlive() && !player.isSpectator()) {
             homeX = (float) player.getX();
@@ -186,7 +296,7 @@ public final class BedWarsStateTracker {
         boolean deadNow = !player.isAlive() || curHp <= 0.0f;
         if (deadNow && !wasDead) {
             pendingEventFlags |= FifthNNSchema.EVT_DEATH;
-            if (player.getY() < 10.0) {
+            if (player.getY() < 15.0) {
                 pendingEventFlags |= FifthNNSchema.EVT_VOID_FALL;
             }
         }
@@ -202,10 +312,11 @@ public final class BedWarsStateTracker {
 
         if (fr.matchPhase == FifthNNSchema.MATCH_PHASE_IN_GAME) {
             matchElapsedTicks++;
-            pendingReward -= 0.0005f; // tiny per-tick time pressure against base camping
+            pendingReward -= 0.0005f; // tiny per-tick time pressure against camping
         }
 
         // Copy state into FrameData
+        fr.episodeId = episodeId;
         fr.ownTeamId = ownTeamId;
         fr.ownBedAlive = ownBedAlive;
         fr.enemyBedsAliveMask = enemyBedsAliveMask;
@@ -217,13 +328,13 @@ public final class BedWarsStateTracker {
         fr.eventFlagsThisTick = pendingEventFlags;
         fr.rewardDelta = pendingReward;
 
-        if (hasHomeSpawn) {
+        if (hasHomeSpawn && fr.landmarks.size() < FifthNNSchema.MAX_LANDMARKS_RAW) {
             fr.landmarks.add(new FrameData.LandmarkEntry(
                     FifthNNSchema.LM_HOME_SPAWN, ownTeamId, homeX, homeY, homeZ, ownBedAlive
             ));
         }
 
-        // Compute quality flags (failsafe noise tagging!)
+        // Compute quality flags (strict noise & teleport failsafe tagging!)
         int qFlags = 0;
         boolean focused = mc.isWindowActive();
         if (focused) qFlags |= FifthNNSchema.QFLAG_WINDOW_FOCUSED;
@@ -234,14 +345,58 @@ public final class BedWarsStateTracker {
                 || fr.matchPhase == FifthNNSchema.MATCH_PHASE_SPECTATING
                 || fr.matchPhase == FifthNNSchema.MATCH_PHASE_POST_GAME);
         if (lobbyOrSpec) qFlags |= FifthNNSchema.QFLAG_LOBBY_OR_SPEC;
+        if (teleportedThisTick) qFlags |= FifthNNSchema.QFLAG_TELEPORT_TICK;
 
-        boolean valid = !pauseOrChat && !deadNow && focused && (!autoTagLobby || !lobbyOrSpec);
+        boolean valid = !pauseOrChat && !deadNow && focused && !teleportedThisTick && (!autoTagLobby || !lobbyOrSpec);
         if (valid) qFlags |= FifthNNSchema.QFLAG_VALID_IN_GAME;
         fr.qualityFlags = qFlags;
+        lastFrameValidInGame = valid;
 
         // Clear per-tick accumulators
         pendingEventFlags = 0;
         pendingReward = 0.0f;
+    }
+
+    private static boolean isInHubOrWaitingLobby(LocalPlayer player) {
+        if (player.isSpectator()) return true;
+
+        boolean hasGearOrBlocks = hasBedWarsGearOrBlocks(player);
+        // Check hotbar for unmistakable hub / waiting-lobby selector items
+        int hubItems = 0;
+        for (int i = 0; i < 9; i++) {
+            ItemStack st = player.getInventory().getItem(i);
+            if (st.isEmpty()) continue;
+            String path = BuiltInRegistries.ITEM.getKey(st.getItem()).getPath();
+            if (path.equals("nether_star") || path.equals("clock") || path.equals("barrier")
+                    || path.equals("blaze_powder") || path.equals("paper") || path.endsWith("_bed")
+                    || path.equals("book") || path.equals("written_book")) {
+                hubItems++;
+            } else if (path.equals("compass") && !hasGearOrBlocks) {
+                hubItems++;
+            }
+        }
+        if (hubItems > 0 && !hasGearOrBlocks) return true;
+        // Hub world far-out coordinates (e.g. PikaNetwork main hub at x=-1720 with no BedWars gear/blocks)
+        if (!hasGearOrBlocks && (Math.abs(player.getX()) > 450.0 || Math.abs(player.getZ()) > 450.0)) return true;
+        // Waiting cage high above the BedWars arena (typically Y=115..160 with no sword/armor/blocks)
+        return player.getY() > 112.0 && !hasGearOrBlocks;
+    }
+
+    private static boolean hasBedWarsGearOrBlocks(LocalPlayer player) {
+        if (!player.getItemBySlot(EquipmentSlot.CHEST).isEmpty() || !player.getItemBySlot(EquipmentSlot.FEET).isEmpty()) {
+            return true;
+        }
+        for (int i = 0; i < 9; i++) {
+            ItemStack st = player.getInventory().getItem(i);
+            if (st.isEmpty()) continue;
+            String path = BuiltInRegistries.ITEM.getKey(st.getItem()).getPath();
+            if (path.endsWith("_sword") || path.endsWith("_pickaxe") || path.endsWith("_axe") || path.equals("shears")
+                    || path.endsWith("_wool") || path.endsWith("_planks") || path.equals("end_stone")
+                    || path.contains("terracotta") || path.equals("obsidian") || path.equals("ladder")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private void parseScoreboard(Minecraft mc, LocalPlayer player) {
@@ -264,7 +419,8 @@ public final class BedWarsStateTracker {
                 String m = line.substring(4).trim();
                 if (!m.isEmpty()) detectedMapName = m;
             }
-            if (lower.contains("waiting...") || lower.contains("starting in")) {
+            if (lower.contains("waiting...") || lower.contains("starting in")
+                    || lower.contains("players:") || lower.contains("online:")) {
                 sawLobbyLine = true;
             }
             if (lower.contains("diamond ii")) diamondTier = Math.max(diamondTier, 2);
@@ -289,7 +445,7 @@ public final class BedWarsStateTracker {
             }
         }
 
-        if (sawLobbyLine) {
+        if (sawLobbyLine && !sawBedwarsTeams) {
             matchPhase = FifthNNSchema.MATCH_PHASE_LOBBY;
         } else if (sawBedwarsTeams) {
             matchPhase = FifthNNSchema.MATCH_PHASE_IN_GAME;
@@ -298,10 +454,77 @@ public final class BedWarsStateTracker {
         }
     }
 
+    /**
+     * Detect BedWars team color from dyed leather armor RGB (works reliably across
+     * PikaNetwork, Jartex, Mineberry, Hypixel, and local Paper plugins!).
+     */
+    public static int inferTeamIdFromArmor(Player p) {
+        if (p == null) return 0;
+        for (EquipmentSlot slot : new EquipmentSlot[]{EquipmentSlot.CHEST, EquipmentSlot.HEAD}) {
+            ItemStack st = p.getItemBySlot(slot);
+            if (st.isEmpty()) continue;
+            int rgb = DyedItemColor.getOrDefault(st, -1);
+            int tid = inferTeamIdFromDyeRgb(rgb);
+            if (tid > 0) return tid;
+        }
+        return 0;
+    }
+
+    public static int inferTeamIdFromDyeRgb(int rgb) {
+        if (rgb == -1) return 0;
+        int masked = rgb & 0x00FFFFFF;
+        // Default undyed leather brown (0xA06540) or pure black
+        if (masked == 0 || masked == 0x00A06540) return 0;
+        int r = (masked >> 16) & 0xFF;
+        int g = (masked >> 8) & 0xFF;
+        int b = masked & 0xFF;
+
+        int[][] palette = {
+                {1, 255, 0, 0}, {1, 255, 85, 85}, {1, 176, 46, 38},       // RED
+                {2, 0, 0, 255}, {2, 85, 85, 255}, {2, 60, 68, 170},       // BLUE
+                {3, 0, 255, 0}, {3, 85, 255, 85}, {3, 128, 199, 31}, {3, 94, 124, 22}, // GREEN
+                {4, 255, 255, 0}, {4, 255, 255, 85}, {4, 254, 216, 61},   // YELLOW
+                {5, 0, 255, 255}, {5, 85, 255, 255}, {5, 58, 179, 218}, {5, 22, 156, 156}, // AQUA
+                {6, 255, 255, 255}, {6, 240, 240, 240},                   // WHITE
+                {7, 255, 85, 255}, {7, 243, 139, 170}, {7, 199, 78, 189}, // PINK
+                {8, 128, 128, 128}, {8, 85, 85, 85}, {8, 157, 157, 151}   // GRAY
+        };
+
+        int bestTeam = 0;
+        int bestDistSq = 9000; // threshold ~95 RGB Euclidean distance
+        for (int[] entry : palette) {
+            int dr = r - entry[1];
+            int dg = g - entry[2];
+            int db = b - entry[3];
+            int dSq = dr * dr + dg * dg + db * db;
+            if (dSq < bestDistSq) {
+                bestDistSq = dSq;
+                bestTeam = entry[0];
+            }
+        }
+        return bestTeam;
+    }
+
+    public static String detectServerProfile(Minecraft mc) {
+        if (mc == null || mc.isLocalServer()) return "local";
+        ServerData srv = mc.getCurrentServer();
+        if (srv == null || srv.ip == null) return "local";
+        String ip = srv.ip.toLowerCase(Locale.ROOT);
+        if (ip.contains("pika")) return "pika";
+        if (ip.contains("jartex")) return "jartex";
+        if (ip.contains("mineberry")) return "mineberry";
+        if (ip.contains("hypixel")) return "hypixel";
+        if (ip.contains("minemen") || ip.contains("mmc")) return "minemen";
+        if (ip.contains("localhost") || ip.startsWith("127.") || ip.startsWith("192.168.") || ip.startsWith("10.")) {
+            return "local";
+        }
+        return ip.replaceAll("[^a-z0-9]", "_");
+    }
+
     private static int parseTeamColorLine(String lower) {
         if (lower.contains("red")) return 1;
         if (lower.contains("blue")) return 2;
-        if (lower.contains("green")) return 3;
+        if (lower.contains("green") || lower.contains("lime")) return 3;
         if (lower.contains("yellow")) return 4;
         if (lower.contains("aqua") || lower.contains("cyan")) return 5;
         if (lower.contains("white")) return 6;
@@ -314,11 +537,23 @@ public final class BedWarsStateTracker {
         return ownTeamId;
     }
 
+    public int getEpisodeId() {
+        return episodeId;
+    }
+
+    public boolean isLastFrameValidInGame() {
+        return lastFrameValidInGame;
+    }
+
+    public String getDetectedServerProfile() {
+        return detectedServerProfile;
+    }
+
     public static int teamColorToTeamId(Optional<?> colorOpt) {
         if (colorOpt == null || colorOpt.isEmpty()) return 0;
         String lower = colorOpt.get().toString().toLowerCase(Locale.ROOT);
-        if (lower.contains("purple")) return 7; // LIGHT_PURPLE / DARK_PURPLE -> Pink/Magenta team
-        if (lower.contains("gold")) return 4;   // GOLD -> Yellow team
+        if (lower.contains("purple")) return 7;
+        if (lower.contains("gold")) return 4;
         return parseTeamColorLine(lower);
     }
 
@@ -342,5 +577,9 @@ public final class BedWarsStateTracker {
             }
         }
         return out.toString().trim();
+    }
+
+    private static double sq(double v) {
+        return v * v;
     }
 }

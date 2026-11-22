@@ -14,7 +14,7 @@ import numpy as np
 # Binary file format magic & version
 FILE_MAGIC = b"5NN1"
 FRAME_MAGIC = b"FRM1"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # Raw recording spatial dimensions (world-aligned in .5nn.gz for lossless 1:1 replay)
 RAW_VOXEL_RADIUS_XZ = 6
@@ -162,6 +162,7 @@ QFLAG_DAGGER_TAKEOVER = 1 << 3
 QFLAG_AI_ACTIVE = 1 << 4
 QFLAG_DEAD_OR_RESPAWN = 1 << 5
 QFLAG_LOBBY_OR_SPEC = 1 << 6
+QFLAG_TELEPORT_TICK = 1 << 7
 
 # Key mask bits
 KEY_W = 1 << 0

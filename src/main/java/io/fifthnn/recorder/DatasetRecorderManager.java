@@ -14,10 +14,11 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * Orchestrates Phase 1 dataset recording with bulletproof failsafes:
- *  - Start/Stop anytime via hotkey (F9), GUI, or /5nn command.
- *  - Auto-handles disconnect, client exit, disk-space guard, size rotation, and crash-safe flushing.
- *  - Cleanly tags pause/chat/unfocused/lobby/respawn frames and HG-DAgger live takeovers.
+ * Orchestrates Phase 1 dataset recording with bulletproof failsafes & multi-game auto-segmentation:
+ *  - Press F9 ONCE and play multiple BedWars matches back-to-back; lobbies, queues, deaths,
+ *    pauses, chat, unfocused windows, and server teleports are cleanly tagged.
+ *  - Auto-detects server profile (pika/jartex/mineberry/hypixel/local) and map name.
+ *  - Prints a detailed session quality summary in chat on stop.
  */
 public final class DatasetRecorderManager {
     private static final Logger LOGGER = LoggerFactory.getLogger("5ifthNN-Recorder");
@@ -31,6 +32,13 @@ public final class DatasetRecorderManager {
     private long sessionTickIndex = 0;
     private long sessionStartWallMs = 0;
     private String lastStatusMessage = "Idle";
+
+    // Live quality counters for HUD & end-of-session chat scorecard
+    private long sessionShopClicks = 0;
+    private long sessionBlocksPlaced = 0;
+    private long sessionCombatClicks = 0;
+    private long sessionLobbyTagged = 0;
+    private int startEpisodeId = 1;
 
     public DatasetRecorderManager(FifthNNConfig config, InputTracker inputTracker, BedWarsStateTracker stateTracker) {
         this.config = config;
@@ -60,19 +68,25 @@ public final class DatasetRecorderManager {
         }
 
         config.setRecordingModeEnum(mode);
+        stateTracker.preCaptureUpdate(mc, mc.player);
+
+        String resolvedServer = "auto".equalsIgnoreCase(config.serverProfile)
+                ? stateTracker.getDetectedServerProfile()
+                : config.serverProfile;
         String mapName = "auto".equalsIgnoreCase(config.mapNameOverride)
                 ? sanitize(stateTracker.getDetectedMapName())
                 : sanitize(config.mapNameOverride);
-        String srv = sanitize(config.serverProfile);
+        String srv = sanitize(resolvedServer);
         String ts = LocalDateTime.now().format(FILE_TS);
         String filename = String.format("%s_%s_%s_%s.5nn.gz", ts, srv, mapName, mode.name());
         Path outFile = config.getRecordingsDir().resolve(filename);
 
         Map<String, Object> header = new LinkedHashMap<>();
-        header.put("modVersion", "0.1.0");
+        header.put("modVersion", "0.2.0");
         header.put("mcVersion", "26.3");
+        header.put("schemaVersion", FifthNNSchema.SCHEMA_VERSION);
         header.put("recordingMode", mode.name());
-        header.put("serverProfile", config.serverProfile);
+        header.put("serverProfile", resolvedServer);
         header.put("mapName", mapName);
         header.put("pvpMode", config.pvpMode18 ? "1.8" : "modern");
         header.put("playerNameHash", mc.player.getGameProfile().name().hashCode());
@@ -87,9 +101,18 @@ public final class DatasetRecorderManager {
             );
             sessionTickIndex = 0;
             sessionStartWallMs = System.currentTimeMillis();
+            sessionShopClicks = 0;
+            sessionBlocksPlaced = 0;
+            sessionCombatClicks = 0;
+            sessionLobbyTagged = 0;
+            startEpisodeId = stateTracker.getEpisodeId();
+
             lastStatusMessage = "Recording: " + filename;
-            notifyPlayer(mc, "§a[5ifthNN] Recording STARTED §7(" + mode.displayName + " | " + filename + ")");
-            LOGGER.info("Started 5ifthNN recording -> {}", outFile);
+            notifyPlayer(mc, String.format(
+                    "§a[5ifthNN] Recording STARTED §7(%s | server=%s | %s)",
+                    mode.displayName, resolvedServer, filename
+            ));
+            LOGGER.info("Started 5ifthNN v0.2 recording -> {}", outFile);
             return true;
         } catch (Exception e) {
             lastStatusMessage = "Start failed: " + e.getMessage();
@@ -105,22 +128,30 @@ public final class DatasetRecorderManager {
         activeWriter = null;
         w.close();
 
-        String msg = String.format(
-                "§e[5ifthNN] Recording STOPPED §7(%s) — %d valid frames (%.1f MB) saved to %s",
-                reason,
-                w.getValidFramesWritten(),
-                w.getBytesWrittenEst() / (1024.0 * 1024.0),
-                w.getFilePath().getFileName()
+        long validFrames = w.getValidFramesWritten();
+        long totalFrames = Math.max(1L, w.getFramesWritten());
+        double validMin = validFrames / 1200.0;
+        double filteredPct = (100.0 * sessionLobbyTagged) / totalFrames;
+        int episodes = Math.max(1, stateTracker.getEpisodeId() - startEpisodeId + 1);
+
+        String summary = String.format(
+                "§e[5ifthNN] STOPPED §7(%s)\n"
+                        + "§f  Valid In-Game: §a%.1f min §7(%d ticks, %.0f%% lobby/pause filtered)\n"
+                        + "§f  Activity: §b%d ep(s) §7| §e%d shop clicks §7| §a%d blocks §7| §c%d LMB clicks\n"
+                        + "§f  File: §7%s (%.2f MB)",
+                reason, validMin, validFrames, filteredPct,
+                episodes, sessionShopClicks, sessionBlocksPlaced, sessionCombatClicks,
+                w.getFilePath().getFileName(), w.getBytesWrittenEst() / (1024.0 * 1024.0)
         );
-        lastStatusMessage = "Saved " + w.getFilePath().getFileName() + " (" + w.getValidFramesWritten() + " valid ticks)";
-        notifyPlayer(mc, msg);
-        LOGGER.info("Stopped recording ({}): {} frames ({} valid, {} dropped)",
-                reason, w.getFramesWritten(), w.getValidFramesWritten(), w.getDroppedFrames());
+        lastStatusMessage = String.format("Saved %.1fm valid (%s)", validMin, w.getFilePath().getFileName());
+        notifyPlayer(mc, summary);
+        LOGGER.info("Stopped recording ({}): {} frames ({} valid, {} dropped, {} shop, {} blocks)",
+                reason, w.getFramesWritten(), validFrames, w.getDroppedFrames(), sessionShopClicks, sessionBlocksPlaced);
     }
 
     /**
-     * Called every 20Hz client tick. Returns the captured FrameData so Phase 2 AI can reuse
-     * the exact same snapshot without capturing twice!
+     * Called every 20Hz client tick. Returns the captured FrameData so Phase 2 AI reuses
+     * the exact same snapshot without capturing twice.
      */
     public synchronized FrameData onClientTick(Minecraft mc, boolean aiActive, boolean daggerTakeover) {
         if (mc.player == null || mc.level == null) {
@@ -130,7 +161,6 @@ public final class DatasetRecorderManager {
             return null;
         }
 
-        // Capture only if recording OR AI inference is active (zero idle overhead when both off!)
         if (activeWriter == null && !aiActive) {
             return null;
         }
@@ -142,9 +172,16 @@ public final class DatasetRecorderManager {
         if (daggerTakeover) fr.qualityFlags |= FifthNNSchema.QFLAG_DAGGER_TAKEOVER;
 
         if (activeWriter != null) {
-            // Failsafe: auto-pause disk writes while window is completely unfocused if configured
             boolean skipWrite = config.autoPauseOnUnfocus && !mc.isWindowActive() && !aiActive;
             if (!skipWrite) {
+                if ((fr.qualityFlags & FifthNNSchema.QFLAG_VALID_IN_GAME) != 0) {
+                    if (fr.guiClickSlot >= 0) sessionShopClicks++;
+                    if ((fr.eventFlagsThisTick & FifthNNSchema.EVT_BLOCK_PLACED) != 0) sessionBlocksPlaced++;
+                    sessionCombatClicks += fr.leftClicksThisTick;
+                } else {
+                    sessionLobbyTagged++;
+                }
+
                 boolean ok = activeWriter.enqueueFrame(fr);
                 sessionTickIndex++;
                 if (!ok || activeWriter.hasFailed()) {
@@ -161,7 +198,7 @@ public final class DatasetRecorderManager {
             stopRecording(mc, "Server disconnect failsafe");
         }
         inputTracker.reset();
-        stateTracker.resetForNewMatch();
+        stateTracker.resetForNewMatch(true);
     }
 
     public synchronized void onClientShutdown() {

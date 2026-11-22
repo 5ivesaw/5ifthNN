@@ -19,7 +19,7 @@ public final class FifthNNConfig {
 
     // Phase 1: Dataset Recorder settings
     public String recordingMode = FifthNNSchema.RecordingMode.FULL_MATCH.name();
-    public String serverProfile = "local";
+    public String serverProfile = "auto";
     public String mapNameOverride = "auto";
     public boolean pvpMode18 = true;
     public boolean recordObserverEntities = true;
@@ -32,7 +32,7 @@ public final class FifthNNConfig {
     public long maxSessionSizeMb = 512L;
     public int flushIntervalTicks = 40; // sync-flush every 2 seconds for crash safety
 
-    // Phase 2: ONNX Inference & Human Physics Guardrails
+    // Phase 2: ONNX Inference & Human Physics Guardrails (calibrated to empirical human profile)
     public String selectedModelFile = "fifthnn_v1.onnx";
     public boolean localServerSafetyLock = true;
     public int maxHumanCps = 11;
@@ -40,6 +40,7 @@ public final class FifthNNConfig {
     public float maxPitchDegPerTick = 22.0f;
     public float samplingTemperature = 0.85f;
     public float aimSmoothingAlpha = 0.70f;
+    public boolean enableMouseGcdSmoothing = true;
     public boolean stochasticSampling = true;
 
     private transient Path rootDir;
