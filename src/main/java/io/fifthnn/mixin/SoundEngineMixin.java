@@ -11,21 +11,28 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 /**
  * Captures directional BedWars sound cues (footsteps, TNT fuse, fireball, pearl, bed break)
  * for the Phase 1 sound radar.
+ *
+ * Injects at RETURN (after SoundEngine.play calls sound.resolve()) so AbstractSoundInstance.sound
+ * is initialized before getVolume() is read.
  */
 @Mixin(SoundEngine.class)
 public abstract class SoundEngineMixin {
-    @Inject(method = "play", at = @At("HEAD"))
+    @Inject(method = "play", at = @At("RETURN"))
     private void fifthnn$captureSound(SoundInstance sound, CallbackInfoReturnable<SoundEngine.PlayResult> cir) {
         if (sound == null) return;
-        var tracker = FifthNNClient.getInputTracker();
-        if (tracker != null && sound.getIdentifier() != null) {
+        try {
+            var tracker = FifthNNClient.getInputTracker();
+            if (tracker == null || sound.getIdentifier() == null) return;
+            float vol = sound.getSound() != null ? sound.getVolume() : 1.0f;
             tracker.onSoundPlayed(
                     sound.getIdentifier().getPath(),
                     sound.getX(),
                     sound.getY(),
                     sound.getZ(),
-                    sound.getVolume()
+                    vol
             );
+        } catch (Throwable ignored) {
+            // Never allow passive sound telemetry to crash the Minecraft client
         }
     }
 }
