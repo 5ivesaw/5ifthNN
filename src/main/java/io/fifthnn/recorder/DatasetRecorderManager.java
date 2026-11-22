@@ -75,11 +75,13 @@ public final class DatasetRecorderManager {
     private int sessionFlickers = 0;
     private int startEpisodeId = 1;
 
-    // F7 double-tap detection & HUD toast
+    // F7 double-tap detection, Auto-Requeue & HUD toast
     private long lastScrapTapMs = 0L;
     private String toastText = null;
     private long toastExpireMs = 0L;
     private int standbyPollCounter = 0;
+    private long pendingRequeueAtMs = -1L;
+    private final java.util.Random rng = new java.util.Random();
 
     // Cached cross-session totals from .meta.json files (zero per-tick disk I/O)
     private double totalSavedMinutes = 0.0;
@@ -140,7 +142,7 @@ public final class DatasetRecorderManager {
         Path outFile = config.getRecordingsDir().resolve(filename);
 
         Map<String, Object> header = new LinkedHashMap<>();
-        header.put("modVersion", "0.3.0");
+        header.put("modVersion", "0.4.0");
         header.put("mcVersion", "26.3");
         header.put("schemaVersion", FifthNNSchema.SCHEMA_VERSION);
         header.put("recordingMode", mode.name());
@@ -275,7 +277,16 @@ public final class DatasetRecorderManager {
             );
             notifyPlayer(mc, summary);
         } else {
-            showToast(String.format("✓ Saved Grade %s (%.1fm)", grade, validMin));
+            double bridgePct = validFrames > 0 ? (100.0 * sessionBridgeTicks) / validFrames : 0.0;
+            double pvpPct = validFrames > 0 ? (100.0 * sessionPvpTicks) / validFrames : 0.0;
+            showToast(String.format("✓ Grade %s (%.1fm)", grade, validMin));
+            notifyPlayer(mc, String.format(
+                    "§a[5ifthNN] Saved Grade %s §7(%.1fm | Bridge %.0f%% | PvP %.0f%% | Shop %d | Blocks %d)",
+                    grade, validMin, bridgePct, pvpPct, sessionShopClicks, sessionBlocksPlaced
+            ));
+            if (config.autoRequeueEnabled && config.autoRequeueCommand != null && !config.autoRequeueCommand.isBlank()) {
+                pendingRequeueAtMs = System.currentTimeMillis() + 2500L + rng.nextInt(2000); // 2.5-4.5s random delay
+            }
         }
         LOGGER.info("Stopped recording ({}) [Grade {}]: {} valid frames, RB={}, FLK={}",
                 reason, grade, validFrames, sessionLagbacks, sessionFlickers);
@@ -291,6 +302,21 @@ public final class DatasetRecorderManager {
                 stopRecording(mc, "Left world / disconnected", state == RecorderState.ACTIVE_MATCH);
             }
             return null;
+        }
+
+        // 0. Passive Auto-Requeue timer (runs ONLY after AUTO_STOP closed .5nn.gz; cancels if GUI/ESC opens!)
+        if (pendingRequeueAtMs > 0L) {
+            if (mc.gui.screen() != null || isRecording()) {
+                pendingRequeueAtMs = -1L;
+            } else if (System.currentTimeMillis() >= pendingRequeueAtMs) {
+                pendingRequeueAtMs = -1L;
+                String cmd = config.autoRequeueCommand.trim();
+                if (cmd.startsWith("/")) cmd = cmd.substring(1);
+                if (!cmd.isEmpty() && mc.player.connection != null) {
+                    mc.player.connection.sendCommand(cmd);
+                    showToast("↻ Auto-requeue sent");
+                }
+            }
         }
 
         // 1. Automatic STANDBY -> ACTIVE_MATCH check (zero disk I/O while in hubs / other minigames)
@@ -447,7 +473,7 @@ public final class DatasetRecorderManager {
         showToast("★ Highlighted last 8s");
     }
 
-    /** F7: Single-tap scraps last 5s; double-tap within 600ms upgrades to last 15s. */
+    /** F7: Single-tap scraps last 3s (60t); double-tap within 600ms upgrades to last 10s (200t). */
     public synchronized void onScrapKey(Minecraft mc) {
         if (!isRecording() || activeTags == null) {
             showToast("Not recording");
@@ -458,13 +484,13 @@ public final class DatasetRecorderManager {
         boolean doubleTap = (now - lastScrapTapMs) <= 600L;
         lastScrapTapMs = now;
         if (doubleTap) {
-            scrubRingBufferBack(end - 300L);
-            activeTags.writeTag(end - 300L, end, stateTracker.getEpisodeId(), FifthNNSchema.TAG_USER_SCRAP_15S);
-            showToast("✂ Scrapped last 15s");
+            scrubRingBufferBack(end - 200L);
+            activeTags.writeTag(end - 200L, end, stateTracker.getEpisodeId(), FifthNNSchema.TAG_USER_SCRAP_10S);
+            showToast("✂ Scrapped last 10s");
         } else {
-            scrubRingBufferBack(end - 100L);
-            activeTags.writeTag(end - 100L, end, stateTracker.getEpisodeId(), FifthNNSchema.TAG_USER_SCRAP_5S);
-            showToast("✂ Scrapped last 5s (tap again for 15s)");
+            scrubRingBufferBack(end - 60L);
+            activeTags.writeTag(end - 60L, end, stateTracker.getEpisodeId(), FifthNNSchema.TAG_USER_SCRAP_3S);
+            showToast("✂ Scrapped last 3s (tap again for 10s)");
         }
     }
 

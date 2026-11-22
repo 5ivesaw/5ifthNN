@@ -101,6 +101,54 @@ public final class FifthNNCommands {
                             ctx.getSource().sendFeedback(Component.literal("§e[5ifthNN] Auto-set ViaFabricPlus 1.8.x OFF"));
                             return 1;
                         })))
+                .then(ClientCommands.literal("requeue")
+                        .then(ClientCommands.literal("on").executes(ctx -> {
+                            FifthNNConfig cfg = FifthNNClient.getConfig();
+                            cfg.autoRequeueEnabled = true;
+                            cfg.save();
+                            ctx.getSource().sendFeedback(Component.literal("§a[5ifthNN] Auto-Requeue ON §7(" + cfg.autoRequeueCommand + ")"));
+                            return 1;
+                        }))
+                        .then(ClientCommands.literal("off").executes(ctx -> {
+                            FifthNNConfig cfg = FifthNNClient.getConfig();
+                            cfg.autoRequeueEnabled = false;
+                            cfg.save();
+                            ctx.getSource().sendFeedback(Component.literal("§e[5ifthNN] Auto-Requeue OFF"));
+                            return 1;
+                        }))
+                        .then(ClientCommands.literal("cmd")
+                                .then(ClientCommands.argument("command", StringArgumentType.greedyString())
+                                        .executes(ctx -> {
+                                            FifthNNConfig cfg = FifthNNClient.getConfig();
+                                            cfg.autoRequeueCommand = StringArgumentType.getString(ctx, "command");
+                                            cfg.save();
+                                            ctx.getSource().sendFeedback(Component.literal("§a[5ifthNN] Auto-Requeue command set to §f" + cfg.autoRequeueCommand));
+                                            return 1;
+                                        }))))
+                .then(ClientCommands.literal("slowmo")
+                        .then(ClientCommands.literal("on").executes(ctx -> {
+                            FifthNNConfig cfg = FifthNNClient.getConfig();
+                            cfg.enableLocalSlowMoSensSync = true;
+                            cfg.save();
+                            ctx.getSource().sendFeedback(Component.literal("§b[5ifthNN] Local 15-TPS Slow-Mo 0.75x Sens Sync ON (local servers only)"));
+                            return 1;
+                        }))
+                        .then(ClientCommands.literal("off").executes(ctx -> {
+                            FifthNNConfig cfg = FifthNNClient.getConfig();
+                            cfg.enableLocalSlowMoSensSync = false;
+                            cfg.save();
+                            ctx.getSource().sendFeedback(Component.literal("§e[5ifthNN] Local 15-TPS Slow-Mo Sens Sync OFF"));
+                            return 1;
+                        })))
+                .then(ClientCommands.literal("helpers").executes(ctx -> {
+                    boolean allowed = FifthNNClient.getHelperManager().areHelpersAllowed();
+                    ctx.getSource().sendFeedback(Component.literal(
+                            allowed
+                                    ? "§a[5ifthNN Helpers] PERMITTED (Local/Whitelisted Server)"
+                                    : "§c[5ifthNN Helpers] LOCKED OFF (Public / Non-Permitted Server)"
+                    ));
+                    return 1;
+                }))
                 .then(ClientCommands.literal("rec")
                         .then(ClientCommands.literal("start")
                                 .executes(ctx -> {

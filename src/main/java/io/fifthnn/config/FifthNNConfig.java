@@ -41,6 +41,25 @@ public final class FifthNNConfig {
     public long maxRecordingsFolderMb = 500L;
     public int flushIntervalTicks = 40; // sync-flush every 2 seconds for crash safety
 
+    // Passive recording ergonomics (outside LocalHelperManager — zero gameplay input)
+    public boolean autoRequeueEnabled = false;
+    public String autoRequeueCommand = "/play bedwars_eight_one";
+
+    // Local Training Helpers (ALL active gameplay helpers strictly gated by LocalHelperManager!)
+    public java.util.List<String> permittedHelperServers = new java.util.ArrayList<>();
+    public boolean enableLocalSlowMoSensSync = false;
+    public boolean enableSmartHotbarKeys = true;
+    public boolean enablePrepBreakKey = true;
+    public boolean enableBlockRefillSwap = true;
+    public boolean enablePostConsumeSwap = true;
+    public boolean enableHoldToClickLmb = false;
+    public boolean enableHoldToClickRmb = false;
+    public boolean enableContextWTap = false;
+    public boolean enableContextBlockhit = false;
+    public boolean enableQuickUtilityThrow = false;
+    public boolean enableShopQuickBuy = false;
+    public boolean enableBridgeUnsneak = false;
+
     // Phase 2: ONNX Inference & Human Physics Guardrails (calibrated to empirical human profile)
     public String selectedModelFile = "fifthnn_v1.onnx";
     public boolean localServerSafetyLock = true;

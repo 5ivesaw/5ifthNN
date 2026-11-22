@@ -239,7 +239,9 @@ public final class FifthNNSchema {
     public static final String TAG_LAGBACK_QUARANTINE = "LAGBACK_QUARANTINE";
     public static final String TAG_FLICKER_QUARANTINE = "FLICKER_QUARANTINE";
     public static final String TAG_LAG_SPIKE = "LAG_SPIKE";
+    public static final String TAG_USER_SCRAP_3S = "USER_SCRAP_3S";
     public static final String TAG_USER_SCRAP_5S = "USER_SCRAP_5S";
+    public static final String TAG_USER_SCRAP_10S = "USER_SCRAP_10S";
     public static final String TAG_USER_SCRAP_15S = "USER_SCRAP_15S";
     public static final String TAG_USER_SCRAP_EPISODE = "USER_SCRAP_EPISODE";
     public static final String TAG_USER_HIGHLIGHT_8S = "USER_HIGHLIGHT_8S";

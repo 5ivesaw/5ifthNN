@@ -66,6 +66,7 @@ public final class BedWarsStateTracker {
     private boolean lagbackThisTick = false;
     private boolean pearlLandingThisTick = false;
     private boolean lagSpikeThisTick = false;
+    private boolean slowMoDrillMode = false;
     private long trackerTickClock = 0L;
     private long lastPearlThrowTick = -9999L;
     private long lastPearlSoundTick = -9999L;
@@ -318,7 +319,7 @@ public final class BedWarsStateTracker {
             }
         }
         lastTickWallMs = now;
-        fr.serverTpsEst = serverTpsEst;
+        fr.serverTpsEst = slowMoDrillMode ? 20.0f : serverTpsEst;
 
         int ping = fr.pingMs;
         int medianPing = computeMedianPing();
@@ -327,7 +328,8 @@ public final class BedWarsStateTracker {
             recentPingCursor = (recentPingCursor + 1) % recentPings.length;
             if (recentPingCount < recentPings.length) recentPingCount++;
         }
-        if (wallDt > 180L || serverTpsEst < 14.0f || (recentPingCount >= 10 && ping > medianPing + 120)) {
+        float minTpsFloor = slowMoDrillMode ? 10.0f : 14.0f;
+        if (wallDt > 180L || serverTpsEst < minTpsFloor || (recentPingCount >= 10 && ping > medianPing + 120)) {
             lagSpikeThisTick = true;
         }
 
@@ -592,6 +594,10 @@ public final class BedWarsStateTracker {
 
     public long getTrackerTickClock() {
         return trackerTickClock;
+    }
+
+    public void setSlowMoDrillMode(boolean enabled) {
+        this.slowMoDrillMode = enabled;
     }
 
     /**
