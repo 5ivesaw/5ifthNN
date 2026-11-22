@@ -224,8 +224,8 @@ public final class FifthNNControlScreen extends Screen {
         int gray = ARGB.opaque(0xB0B8C8);
         int cyan = ARGB.opaque(0x38BDF8);
 
-        drawCentered(graphics, "§l5ifthNN v0.3 §r§7— Pure NN BedWars AI (MC 26.3 / 1.8 PvP)", cx, 10, white);
-        drawCentered(graphics, "§7Phase 1: Zero-Config Auto-Recorder (F6=Highlight, F7=Scrap 5s/15s, F9=Manual)", cx, 23, cyan);
+        drawCentered(graphics, "§l5ifthNN v0.4.1 §r§7— Pure NN BedWars AI (MC 26.3 / 1.8 PvP)", cx, 10, white);
+        drawCentered(graphics, "§7Phase 1: Zero-Config Auto-Recorder (F6=Highlight, F7=Scrap 3s/10s, F9=Manual)", cx, 23, cyan);
         drawCentered(graphics, "§7Phase 2: Optional ONNX Runtime Engine (~1.8M params)", cx, 130, cyan);
 
         String footer = String.format(

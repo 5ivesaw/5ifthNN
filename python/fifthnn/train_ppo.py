@@ -32,6 +32,7 @@ from .schema import (
     EVT_KILL,
     EVT_OWN_BED_LOST,
     SCHEMA_VERSION,
+    server_profile_to_id,
 )
 
 
@@ -117,8 +118,9 @@ def run_ppo_update_on_rollouts(
 ) -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    policy = FifthNNModel(include_aux=False).to(device)
-    ref_bc = FifthNNModel(include_aux=False).to(device)
+    # Disable dropout during PPO so old_lp and new_lp match deterministically (ratio == 1.0 at step 0!)
+    policy = FifthNNModel(include_aux=False, dropout=0.0).to(device)
+    ref_bc = FifthNNModel(include_aux=False, dropout=0.0).to(device)
 
     policy.load_state_dict(torch.load(policy_ckpt, map_location=device)["model_state_dict"], strict=False)
     ref_bc.load_state_dict(torch.load(bc_anchor_ckpt, map_location=device)["model_state_dict"], strict=False)
@@ -140,7 +142,7 @@ def run_ppo_update_on_rollouts(
         tags = load_tags_sidecar(path)
         segments = split_contiguous_segments(raw_frames, tags=tags)
         pvp18 = header.get("pvpMode", "1.8") == "1.8"
-        srv_id = hash(header.get("serverProfile", "local")) & 0x7
+        srv_id = server_profile_to_id(header.get("serverProfile", "local"))
 
         for frames in segments:
             if len(frames) < chunk_len + 1:
@@ -158,7 +160,11 @@ def run_ppo_update_on_rollouts(
                 obs.append(o)
                 t = encode_frame_targets(frames[ti + 1], mirror=False)
                 for k in tgts:
-                    tgts[k].append(t[k])
+                    if k == "gui_open":
+                        # Gate strictly on obs(t) GUI state so close_gui on t+1 is included!
+                        tgts[k].append(1 if frames[ti].gui_type > 0 else 0)
+                    else:
+                        tgts[k].append(t[k])
 
             vc_t = torch.from_numpy(np.stack(vc)).unsqueeze(0).to(device)
             vf_t = torch.from_numpy(np.stack(vf)).unsqueeze(0).to(device)
@@ -174,26 +180,46 @@ def run_ppo_update_on_rollouts(
                 "gui_open": torch.tensor(tgts["gui_open"], dtype=torch.float32, device=device).unsqueeze(0),
             }
 
+            # Roll forward chunk-by-chunk capturing exact boundary hidden states so
+            # PPO update pass produces identical new_lp == old_lp (ratio == 1.0) at step 0!
+            chunk_specs = []
+            vals_parts = []
             with torch.no_grad():
                 hf, hs = policy.init_hidden(1, device)
-                old_out, _, _ = policy.forward_sequence(vc_t, vf_t, obs_t, hf, hs)
                 rf, rs = ref_bc.init_hidden(1, device)
-                ref_out, _, _ = ref_bc.forward_sequence(vc_t, vf_t, obs_t, rf, rs)
-                old_lp, _, _ = factored_logprob_and_kl(old_out, ref_out, act_t)
-                vals = old_out["value"].squeeze(0).cpu().numpy()
+                for s in range(0, usable_len, chunk_len):
+                    e = min(usable_len, s + chunk_len)
+                    hf_in, hs_in = hf.clone(), hs.clone()
+                    rf_in, rs_in = rf.clone(), rs.clone()
+                    old_out, hf, hs = policy.forward_sequence(
+                        vc_t[:, s:e], vf_t[:, s:e], obs_t[:, s:e], hf_in, hs_in, start_step=s
+                    )
+                    ref_out, rf, rs = ref_bc.forward_sequence(
+                        vc_t[:, s:e], vf_t[:, s:e], obs_t[:, s:e], rf_in, rs_in, start_step=s
+                    )
+                    sub_act = {k: v[:, s:e] for k, v in act_t.items()}
+                    old_lp_chunk, _, _ = factored_logprob_and_kl(old_out, ref_out, sub_act)
+                    vals_parts.append(old_out["value"].squeeze(0).cpu().numpy())
+                    if e - s == chunk_len:
+                        chunk_specs.append((s, e, hf_in.cpu(), hs_in.cpu(), rf_in.cpu(), rs_in.cpu(), old_lp_chunk.cpu()))
 
+            vals = np.concatenate(vals_parts, axis=0)
             adv, ret = compute_gae(rewards, vals)
             adv = (adv - adv.mean()) / (adv.std() + 1e-6)
 
-            for s in range(0, usable_len - chunk_len + 1, chunk_len):
-                e = s + chunk_len
+            for s, e, hf_in, hs_in, rf_in, rs_in, old_lp_chunk in chunk_specs:
                 chunks.append(
                     {
+                        "start_step": s,
                         "vc": vc_t[:, s:e].cpu(),
                         "vf": vf_t[:, s:e].cpu(),
                         "obs": obs_t[:, s:e].cpu(),
                         "act": {k: v[:, s:e].cpu() for k, v in act_t.items()},
-                        "old_lp": old_lp[:, s:e].cpu(),
+                        "hf": hf_in,
+                        "hs": hs_in,
+                        "rf": rf_in,
+                        "rs": rs_in,
+                        "old_lp": old_lp_chunk,
                         "adv": torch.from_numpy(adv[s:e]).unsqueeze(0),
                         "ret": torch.from_numpy(ret[s:e]).unsqueeze(0),
                     }
@@ -208,15 +234,18 @@ def run_ppo_update_on_rollouts(
             vf = ch["vf"].to(device)
             obs = ch["obs"].to(device)
             act = {k: v.to(device) for k, v in ch["act"].items()}
+            hf = ch["hf"].to(device)
+            hs = ch["hs"].to(device)
+            rf = ch["rf"].to(device)
+            rs = ch["rs"].to(device)
             old_lp = ch["old_lp"].to(device)
             adv = ch["adv"].to(device)
             ret = ch["ret"].to(device)
+            start_step = ch["start_step"]
 
-            hf, hs = policy.init_hidden(1, device)
-            out, _, _ = policy.forward_sequence(vc, vf, obs, hf, hs)
+            out, _, _ = policy.forward_sequence(vc, vf, obs, hf, hs, start_step=start_step)
             with torch.no_grad():
-                rf, rs = ref_bc.init_hidden(1, device)
-                ref_out, _, _ = ref_bc.forward_sequence(vc, vf, obs, rf, rs)
+                ref_out, _, _ = ref_bc.forward_sequence(vc, vf, obs, rf, rs, start_step=start_step)
 
             new_lp, kl, ent = factored_logprob_and_kl(out, ref_out, act)
             ratio = torch.exp((new_lp - old_lp).clamp(-10.0, 10.0))

@@ -140,15 +140,78 @@ public final class FifthNNCommands {
                             ctx.getSource().sendFeedback(Component.literal("§e[5ifthNN] Local 15-TPS Slow-Mo Sens Sync OFF"));
                             return 1;
                         })))
-                .then(ClientCommands.literal("helpers").executes(ctx -> {
-                    boolean allowed = FifthNNClient.getHelperManager().areHelpersAllowed();
-                    ctx.getSource().sendFeedback(Component.literal(
-                            allowed
-                                    ? "§a[5ifthNN Helpers] PERMITTED (Local/Whitelisted Server)"
-                                    : "§c[5ifthNN Helpers] LOCKED OFF (Public / Non-Permitted Server)"
-                    ));
-                    return 1;
-                }))
+                .then(ClientCommands.literal("helpers")
+                        .executes(ctx -> {
+                            boolean allowed = FifthNNClient.getHelperManager().areHelpersAllowed();
+                            FifthNNConfig cfg = FifthNNClient.getConfig();
+                            String status = String.format(
+                                    "%s\n§7  hotbar=%s prep=%s refill=%s consume=%s lmb=%s rmb=%s wtap=%s blockhit=%s util=%s quickbuy=%s unsneak=%s",
+                                    allowed
+                                            ? "§a[5ifthNN Helpers] PERMITTED (Local/Whitelisted Server)"
+                                            : "§c[5ifthNN Helpers] LOCKED OFF (Public / Non-Permitted Server)",
+                                    cfg.enableSmartHotbarKeys, cfg.enablePrepBreakKey, cfg.enableBlockRefillSwap,
+                                    cfg.enablePostConsumeSwap, cfg.enableHoldToClickLmb, cfg.enableHoldToClickRmb,
+                                    cfg.enableContextWTap, cfg.enableContextBlockhit, cfg.enableQuickUtilityThrow,
+                                    cfg.enableShopQuickBuy, cfg.enableBridgeUnsneak
+                            );
+                            ctx.getSource().sendFeedback(Component.literal(status));
+                            return 1;
+                        })
+                        .then(ClientCommands.literal("permit")
+                                .then(ClientCommands.argument("host", StringArgumentType.word())
+                                        .executes(ctx -> {
+                                            String host = io.fifthnn.helper.LocalHelperManager.extractHost(StringArgumentType.getString(ctx, "host"));
+                                            FifthNNConfig cfg = FifthNNClient.getConfig();
+                                            if (cfg.permittedHelperServers == null) cfg.permittedHelperServers = new java.util.ArrayList<>();
+                                            if (!host.isEmpty() && !cfg.permittedHelperServers.contains(host)) {
+                                                cfg.permittedHelperServers.add(host);
+                                                cfg.save();
+                                            }
+                                            ctx.getSource().sendFeedback(Component.literal("§a[5ifthNN Helpers] Permitted server added: §f" + host));
+                                            return 1;
+                                        })))
+                        .then(ClientCommands.literal("unpermit")
+                                .then(ClientCommands.argument("host", StringArgumentType.word())
+                                        .executes(ctx -> {
+                                            String host = io.fifthnn.helper.LocalHelperManager.extractHost(StringArgumentType.getString(ctx, "host"));
+                                            FifthNNConfig cfg = FifthNNClient.getConfig();
+                                            if (cfg.permittedHelperServers != null && cfg.permittedHelperServers.removeIf(s -> s.equalsIgnoreCase(host))) {
+                                                cfg.save();
+                                                ctx.getSource().sendFeedback(Component.literal("§e[5ifthNN Helpers] Removed permitted server: §f" + host));
+                                            } else {
+                                                ctx.getSource().sendFeedback(Component.literal("§7[5ifthNN Helpers] Server not in list: §f" + host));
+                                            }
+                                            return 1;
+                                        })))
+                        .then(ClientCommands.literal("toggle")
+                                .then(ClientCommands.argument("module", StringArgumentType.word())
+                                        .executes(ctx -> {
+                                            String mod = StringArgumentType.getString(ctx, "module").toLowerCase(java.util.Locale.ROOT);
+                                            FifthNNConfig cfg = FifthNNClient.getConfig();
+                                            Boolean next = switch (mod) {
+                                                case "hotbar" -> cfg.enableSmartHotbarKeys = !cfg.enableSmartHotbarKeys;
+                                                case "prep" -> cfg.enablePrepBreakKey = !cfg.enablePrepBreakKey;
+                                                case "refill" -> cfg.enableBlockRefillSwap = !cfg.enableBlockRefillSwap;
+                                                case "consume" -> cfg.enablePostConsumeSwap = !cfg.enablePostConsumeSwap;
+                                                case "lmb" -> cfg.enableHoldToClickLmb = !cfg.enableHoldToClickLmb;
+                                                case "rmb" -> cfg.enableHoldToClickRmb = !cfg.enableHoldToClickRmb;
+                                                case "wtap" -> cfg.enableContextWTap = !cfg.enableContextWTap;
+                                                case "blockhit" -> cfg.enableContextBlockhit = !cfg.enableContextBlockhit;
+                                                case "util" -> cfg.enableQuickUtilityThrow = !cfg.enableQuickUtilityThrow;
+                                                case "quickbuy" -> cfg.enableShopQuickBuy = !cfg.enableShopQuickBuy;
+                                                case "unsneak" -> cfg.enableBridgeUnsneak = !cfg.enableBridgeUnsneak;
+                                                default -> null;
+                                            };
+                                            if (next == null) {
+                                                ctx.getSource().sendFeedback(Component.literal(
+                                                        "§e[5ifthNN Helpers] Unknown module. Use: hotbar|prep|refill|consume|lmb|rmb|wtap|blockhit|util|quickbuy|unsneak"));
+                                                return 0;
+                                            }
+                                            cfg.save();
+                                            ctx.getSource().sendFeedback(Component.literal(
+                                                    "§b[5ifthNN Helpers] " + mod + " -> " + (next ? "§aON" : "§7OFF")));
+                                            return 1;
+                                        }))))
                 .then(ClientCommands.literal("rec")
                         .then(ClientCommands.literal("start")
                                 .executes(ctx -> {

@@ -93,6 +93,7 @@ public final class BedWarsStateTracker {
         matchElapsedTicks = 0;
         hasHomeSpawn = false;
         hasPrevSelfPos = false;
+        lastTickWallMs = 0L;
         pendingEventFlags = 0;
         pendingReward = 0.0f;
         pendingServerPositionPacket = false;
@@ -423,7 +424,10 @@ public final class BedWarsStateTracker {
         int qFlags = 0;
         boolean focused = mc.isWindowActive();
         if (focused) qFlags |= FifthNNSchema.QFLAG_WINDOW_FOCUSED;
-        boolean pauseOrChat = (fr.guiType == FifthNNSchema.GUI_PAUSE || fr.guiType == FifthNNSchema.GUI_CHAT);
+        // Filter pause, chat, and non-container mod/settings menus (e.g. F8 Control Panel) from gameplay data
+        boolean pauseOrChat = (fr.guiType == FifthNNSchema.GUI_PAUSE
+                || fr.guiType == FifthNNSchema.GUI_CHAT
+                || fr.guiType == FifthNNSchema.GUI_OTHER);
         if (pauseOrChat) qFlags |= FifthNNSchema.QFLAG_PAUSE_OR_CHAT;
         if (deadNow || fr.matchPhase == FifthNNSchema.MATCH_PHASE_RESPAWNING) qFlags |= FifthNNSchema.QFLAG_DEAD_OR_RESPAWN;
         boolean lobbyOrSpec = (fr.matchPhase == FifthNNSchema.MATCH_PHASE_LOBBY
@@ -534,7 +538,10 @@ public final class BedWarsStateTracker {
         if (sawLobbyLine && !sawBedwarsTeams) {
             matchPhase = FifthNNSchema.MATCH_PHASE_LOBBY;
         } else if (sawBedwarsTeams) {
-            matchPhase = FifthNNSchema.MATCH_PHASE_IN_GAME;
+            // Never clobber POST_GAME (victory dance) or SPECTATING back into IN_GAME while sidebar still shows teams!
+            if (matchPhase != FifthNNSchema.MATCH_PHASE_POST_GAME && matchPhase != FifthNNSchema.MATCH_PHASE_SPECTATING) {
+                matchPhase = FifthNNSchema.MATCH_PHASE_IN_GAME;
+            }
             enemyBedsAliveMask = livingEnemyBeds;
             enemiesAliveCount = livingTeams;
         }

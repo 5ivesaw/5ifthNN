@@ -143,10 +143,12 @@ public final class HumanActionExecutor {
         if (mc == null || mc.player == null || mc.gui.screen() != null) return;
         if (Math.abs(pendingYawToApply) < 1e-4f && Math.abs(pendingPitchToApply) < 1e-4f) return;
 
-        // Fraction of one 50ms tick elapsed during this render frame
-        float frac = clamp((float) (frameDeltaSec / 0.05), 0.05f, 1.0f);
-        float stepYaw = pendingYawToApply * frac;
-        float stepPitch = pendingPitchToApply * frac;
+        // Fraction of one 50ms tick elapsed during this render frame (linear stepping so 100% of delta applies!)
+        float frac = clamp((float) (frameDeltaSec / 0.05), 0.02f, 1.0f);
+        float rawYaw = smoothedYawDelta * frac;
+        float rawPitch = smoothedPitchDelta * frac;
+        float stepYaw = Math.abs(rawYaw) >= Math.abs(pendingYawToApply) ? pendingYawToApply : rawYaw;
+        float stepPitch = Math.abs(rawPitch) >= Math.abs(pendingPitchToApply) ? pendingPitchToApply : rawPitch;
 
         // Quantize to exact Minecraft mouse sensitivity GCD step
         double sens = mc.options.sensitivity().get();

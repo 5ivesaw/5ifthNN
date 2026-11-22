@@ -45,7 +45,7 @@ jobs:
         run: |
           MC_JAR=$(find .gradle ~/.gradle -name "*minecraft*26.3*.jar" 2>/dev/null | head -n 1)
           echo "Verifying mixins against $MC_JAR"
-          javap -p -cp "$MC_JAR" net.minecraft.client.KeyMapping | grep -E "clickCount"
+          javap -p -cp "$MC_JAR" net.minecraft.client.KeyMapping | grep -E "clickCount|key;"
           javap -p -cp "$MC_JAR" net.minecraft.client.MouseHandler | grep -E "minecraft|accumulatedDX|accumulatedDY|turnPlayer"
           javap -p -cp "$MC_JAR" net.minecraft.client.multiplayer.MultiPlayerGameMode | grep -E "handleContainerInput|destroyProgress|attack\("
           javap -p -cp "$MC_JAR" net.minecraft.client.sounds.SoundEngine | grep -E "play\("

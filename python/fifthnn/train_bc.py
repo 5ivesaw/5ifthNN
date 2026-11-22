@@ -35,6 +35,7 @@ from .schema import (
     EVT_DAMAGE_TAKEN,
     EVT_ITEM_BOUGHT,
     QFLAG_DAGGER_TAKEOVER,
+    server_profile_to_id,
 )
 
 SFLAG_ON_GROUND = 1 << 0
@@ -154,7 +155,7 @@ class BedWarsSequenceDataset(Dataset):
         header, frames, _ = self.segments[seg_idx]
         meta = self.seg_meta[seg_idx]
         pvp18 = header.get("pvpMode", "1.8") == "1.8"
-        srv_id = hash(header.get("serverProfile", "local")) & 0x7
+        srv_id = server_profile_to_id(header.get("serverProfile", "local"))
 
         # Critical Invariant #2: Only permute 0..8 hotbar slots if GUI is closed across the ENTIRE window!
         window_slice = frames[start : start + self.seq_len + 1]
@@ -204,9 +205,10 @@ class BedWarsSequenceDataset(Dataset):
                     idle_run = 0
 
             # AFK-shop masking (>80 consecutive open-shop ticks with zero clicks)
-            gui_open_val = float(tgt["gui_open"]) if fr_obs.gui_type > 0 else 0.0
+            # Gate strictly on fr_obs.gui_type > 0 so closing the GUI (gui_action == 1 on t+1) is ALWAYS supervised!
+            gui_open_val = 1.0 if fr_obs.gui_type > 0 else 0.0
             if gui_open_val > 0.0:
-                if fr_act.gui_click_slot >= 0:
+                if fr_act.gui_click_slot >= 0 or fr_act.gui_click_slot == -2:
                     shop_no_click_run = 0
                 else:
                     shop_no_click_run += 1
@@ -356,11 +358,37 @@ def load_all_segments(recording_paths: List[str], min_len: int) -> List[Tuple[Di
     all_segs: List[Tuple[Dict, List[FrameRecord], List[Dict]]] = []
     for path in recording_paths:
         header, frames = read_recording(path, valid_only=False)
+        hdr = dict(header)
+        hdr["_source_file"] = str(path)
         tags = load_tags_sidecar(path)
         for seg in split_contiguous_segments(frames, tags=tags):
             if len(seg) >= min_len:
-                all_segs.append((header, seg, tags))
+                all_segs.append((hdr, seg, tags))
     return all_segs
+
+
+def split_segments_by_episode(
+    segments: List[Tuple[Dict, List[FrameRecord], List[Dict]]],
+    val_ratio: float,
+) -> Tuple[List[Tuple[Dict, List[FrameRecord], List[Dict]]], List[Tuple[Dict, List[FrameRecord], List[Dict]]]]:
+    """Group segments by (source_file, episode_id) so train and validation never share an episode."""
+    groups: Dict[Tuple[str, int], List[Tuple[Dict, List[FrameRecord], List[Dict]]]] = {}
+    for item in segments:
+        hdr, seg, _ = item
+        key = (str(hdr.get("_source_file", "")), int(seg[0].episode_id))
+        groups.setdefault(key, []).append(item)
+    keys = list(groups.keys())
+    random.shuffle(keys)
+    val_ep_count = max(1, int(round(len(keys) * val_ratio))) if len(keys) >= 2 and val_ratio > 0.0 else 0
+    val_keys = set(keys[:val_ep_count])
+    val_segs: List[Tuple[Dict, List[FrameRecord], List[Dict]]] = []
+    train_segs: List[Tuple[Dict, List[FrameRecord], List[Dict]]] = []
+    for k, seg_list in groups.items():
+        if k in val_keys:
+            val_segs.extend(seg_list)
+        else:
+            train_segs.extend(seg_list)
+    return train_segs, val_segs
 
 
 def main() -> None:
@@ -391,10 +419,7 @@ def main() -> None:
     if not segments:
         raise RuntimeError(f"No contiguous in-game segments >= {args.seq_len + 22} ticks found.")
 
-    random.shuffle(segments)
-    val_count = max(1, int(len(segments) * args.val_ratio)) if len(segments) >= 5 else 0
-    val_segs = segments[:val_count]
-    train_segs = segments[val_count:]
+    train_segs, val_segs = split_segments_by_episode(segments, args.val_ratio)
 
     train_ds = BedWarsSequenceDataset(
         train_segs, seq_len=args.seq_len, stride=args.seq_len // 2, burn_in=args.burn_in,

@@ -46,8 +46,13 @@ public final class CombatWeaveHelper {
     }
 
     public void reset(Minecraft mc) {
-        if (blockhitTicksRemaining > 0 && mc != null && mc.options != null) {
-            mc.options.keyUse.setDown(false);
+        if (mc != null && mc.options != null) {
+            if (wTapSuppressRemaining > 0) {
+                mc.options.keyUp.setDown(LocalHelperManager.isPhysicallyHeld(mc, mc.options.keyUp));
+            }
+            if (blockhitTicksRemaining > 0) {
+                mc.options.keyUse.setDown(LocalHelperManager.isPhysicallyHeld(mc, mc.options.keyUse));
+            }
         }
         wTapSuppressRemaining = 0;
         blockhitTicksRemaining = 0;
@@ -110,19 +115,21 @@ public final class CombatWeaveHelper {
     public void onClientTick(Minecraft mc, FifthNNConfig cfg, BedWarsStateTracker st, long tick) {
         if (mc == null || mc.player == null || mc.options == null) return;
 
-        // Maintain W-Tap suppression (never forces W=true after releasing — physical key state resumes naturally!)
+        // Maintain W-Tap suppression, then restore exact physical W key state (never leaves W stuck false!)
         if (wTapSuppressRemaining > 0) {
             wTapSuppressRemaining--;
             if (wTapSuppressRemaining > 0) {
                 mc.options.keyUp.setDown(false);
+            } else {
+                mc.options.keyUp.setDown(LocalHelperManager.isPhysicallyHeld(mc, mc.options.keyUp));
             }
         }
 
-        // Maintain Blockhit pulse
+        // Maintain Blockhit pulse, then restore exact physical RMB state
         if (blockhitTicksRemaining > 0) {
             blockhitTicksRemaining--;
             if (blockhitTicksRemaining == 0) {
-                mc.options.keyUse.setDown(false);
+                mc.options.keyUse.setDown(LocalHelperManager.isPhysicallyHeld(mc, mc.options.keyUse));
             }
         }
 

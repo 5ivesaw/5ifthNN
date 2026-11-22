@@ -76,7 +76,7 @@ public final class ClickCadenceHelper {
                     lastMiningActiveTick = tick;
                 }
 
-                Player targetEnemy = findValidCombatTarget(mc, player, st);
+                Player targetEnemy = findValidCombatTarget(mc, player, st, tick);
                 if (targetEnemy != null) {
                     lastTrackedEnemyId = targetEnemy.getId();
                     if (combatEntryTick < 0) {
@@ -129,7 +129,7 @@ public final class ClickCadenceHelper {
         }
     }
 
-    private Player findValidCombatTarget(Minecraft mc, LocalPlayer self, BedWarsStateTracker st) {
+    private Player findValidCombatTarget(Minecraft mc, LocalPlayer self, BedWarsStateTracker st, long tick) {
         int ownTeam = st != null ? st.getOwnTeamId() : 0;
         var cache = st != null ? st.getLandmarkCache() : null;
 
@@ -139,7 +139,7 @@ public final class ClickCadenceHelper {
         }
 
         // 2. Tightened <= 3.5b, +-30 deg cone WITH strict line-of-sight (never clicks through walls!)
-        if (mc.hitResult instanceof BlockHitResult && (st != null && st.getTrackerTickClock() - lastMiningActiveTick <= 3L)) {
+        if (mc.hitResult instanceof BlockHitResult && (tick - lastMiningActiveTick <= 3L)) {
             return null; // Mining hysteresis: don't jitter off mining a bed defense
         }
         Vec3 look = self.getViewVector(1.0f).normalize();

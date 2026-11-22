@@ -40,7 +40,6 @@ public final class HotbarHelper {
     private boolean wasUsingConsumable = false;
     private int consumeSlot = -1;
     private int consumeStartCount = 0;
-    private int slotBeforeConsume = -1;
     private long pendingSwordReturnAtTick = -1L;
 
     public void reset() {
@@ -50,7 +49,6 @@ public final class HotbarHelper {
         wasUsingConsumable = false;
         consumeSlot = -1;
         consumeStartCount = 0;
-        slotBeforeConsume = -1;
         pendingSwordReturnAtTick = -1L;
     }
 
@@ -115,8 +113,6 @@ public final class HotbarHelper {
                 if (completed && curSlot == consumeSlot) {
                     pendingSwordReturnAtTick = tick + 1L + rng.nextInt(2); // 1-2 tick human delay!
                 }
-            } else if (!holdingConsumable) {
-                slotBeforeConsume = curSlot;
             }
         }
     }
@@ -189,7 +185,8 @@ public final class HotbarHelper {
         BlockState bs = mc.level.getBlockState(bhr.getBlockPos());
         int packed = WorldSnapshotCapture.classifyPackedVoxel(bs, bhr.getBlockPos(), st, st.getOwnTeamId());
         int bcat = packed & 0x3F;
-        if (bcat == FifthNNSchema.BLOCK_BED_ENEMY || bcat == FifthNNSchema.BLOCK_BED_OWN) return;
+        boolean breakable = (packed & 0x40) != 0;
+        if (!breakable || bcat == FifthNNSchema.BLOCK_BED_ENEMY || bcat == FifthNNSchema.BLOCK_BED_OWN) return;
 
         Inventory inv = mc.player.getInventory();
         int target = -1;
@@ -198,7 +195,7 @@ public final class HotbarHelper {
         } else if (bcat == FifthNNSchema.BLOCK_WOOD_PLANKS) {
             target = findBestAxeSlot(inv);
         } else if (bcat == FifthNNSchema.BLOCK_ENDSTONE || bcat == FifthNNSchema.BLOCK_TERRACOTTA
-                || bcat == FifthNNSchema.BLOCK_OBSIDIAN || bcat == FifthNNSchema.BLOCK_SOLID_MAP) {
+                || bcat == FifthNNSchema.BLOCK_OBSIDIAN) {
             target = findBestPickaxeSlot(inv);
         }
         selectSlotSafe(inv, target);

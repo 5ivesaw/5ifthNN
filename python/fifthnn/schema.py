@@ -244,3 +244,18 @@ def dequantize_angle_mulaw(bin_idx: int, max_deg: float, num_bins: int = NUM_AIM
     u = (2.0 * bin_idx / (num_bins - 1)) - 1.0
     expanded = math.copysign(((1.0 + MU_LAW_MU) ** abs(u) - 1.0) / MU_LAW_MU, u)
     return float(expanded * max_deg)
+
+
+def server_profile_to_id(profile: str | None) -> int:
+    """
+    Deterministic server profile ID in [0, 7], bit-for-bit identical to Java's
+    FifthNNSchema.serverProfileToId() = Math.floorMod(profile.hashCode(), 8).
+    Never uses Python's randomized per-process hash()!
+    """
+    if not profile:
+        return 0
+    h = 0
+    for ch in profile:
+        h = (31 * h + ord(ch)) & 0xFFFFFFFF
+    # Since 8 is a power of 2, Math.floorMod(signed_int32(h), 8) == h & 0x7
+    return h & 0x7

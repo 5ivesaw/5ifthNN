@@ -252,7 +252,12 @@ def _count_flickers_and_rubberbands(frames: List[FrameRecord]) -> Tuple[int, int
         if fr.event_flags & EVT_BLOCK_PLACED:
             fd = face_deltas.get(fr.hit_face, (0, 0, 0))
             tx, ty, tz = fr.hit_bx + fd[0], fr.hit_by + fd[1], fr.hit_bz + fd[2]
-            seq = [get_cat(frames[i + k], tx, ty, tz) for k in range(0, min(12, len(frames) - i))]
+            seq = []
+            for k in range(0, min(12, len(frames) - i)):
+                cur_f = frames[i + k]
+                if k > 0 and (cur_f.episode_id != fr.episode_id or cur_f.tick_index - frames[i + k - 1].tick_index > 2):
+                    break
+                seq.append(get_cat(cur_f, tx, ty, tz))
             if len(seq) >= 6 and seq[0] and seq[0] > 0:
                 if any(seq[k] == 0 and any(x and x > 0 for x in seq[k + 1 :]) for k in range(1, min(9, len(seq) - 1))):
                     flickers += 1

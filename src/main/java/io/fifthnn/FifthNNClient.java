@@ -41,6 +41,7 @@ import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
 import net.minecraft.world.InteractionResult;
+import net.minecraft.world.item.BlockItem;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -113,7 +114,7 @@ public final class FifthNNClient implements ClientModInitializer {
             if (onnxEngine != null) onnxEngine.close();
         }, "5ifthNN-ShutdownHook"));
 
-        LOGGER.info("5ifthNN v0.4.0 initialized (MC 26.3) | ViaFabricPlus={} | ONNX={} | Recordings={}",
+        LOGGER.info("5ifthNN v0.4.1 initialized (MC 26.3) | ViaFabricPlus={} | ONNX={} | Recordings={}",
                 ViaFlickerGuard.isViaFabricPlusLoaded(), OnnxPolicyEngine.isRuntimeAvailable(), config.getRecordingsDir());
     }
 
@@ -202,22 +203,26 @@ public final class FifthNNClient implements ClientModInitializer {
             int rightClicks = ((KeyMappingAccessor) mc.options.keyUse).fifthnn$getClickCount();
             for (int i = 0; i < leftClicks; i++) inputTracker.onMouseButtonPress(0);
             for (int i = 0; i < rightClicks; i++) inputTracker.onMouseButtonPress(1);
-
-            int curSlot = mc.player.getInventory().getSelectedSlot();
-            if (lastSelectedHotbar >= 0 && curSlot != lastSelectedHotbar) {
-                inputTracker.onHotbarSlotSelected(curSlot);
-            }
-            lastSelectedHotbar = curSlot;
-
-            boolean containerOpen = mc.gui.screen() instanceof AbstractContainerScreen<?>;
-            if (wasContainerOpen && !containerOpen) {
-                inputTracker.onGuiClosed();
-            }
-            wasContainerOpen = containerOpen;
         });
 
         ClientTickEvents.END_CLIENT_TICK.register(mc -> {
             ViaFlickerGuard.onClientTick(mc.level);
+
+            // Detect hotbar slot changes & container closes at END_CLIENT_TICK (AFTER handleKeybinds()!)
+            // right before recorder.onClientTick so BOTH manual and helper swaps align on exact action tick t+1!
+            if (mc.player != null) {
+                int curSlot = mc.player.getInventory().getSelectedSlot();
+                if (lastSelectedHotbar >= 0 && curSlot != lastSelectedHotbar) {
+                    inputTracker.onHotbarSlotSelected(curSlot);
+                }
+                lastSelectedHotbar = curSlot;
+
+                boolean containerOpen = mc.gui.screen() instanceof AbstractContainerScreen<?>;
+                if (wasContainerOpen && !containerOpen) {
+                    inputTracker.onGuiClosed();
+                }
+                wasContainerOpen = containerOpen;
+            }
 
             while (keyHighlight.consumeClick()) recorder.onHighlightKey(mc);
             while (keyScrap.consumeClick()) recorder.onScrapKey(mc);
@@ -237,9 +242,10 @@ public final class FifthNNClient implements ClientModInitializer {
             FrameData frame = recorder.onClientTick(mc, aiActive, takeoverHeld);
             helperManager.onClientTick(mc, stateTracker, frame, aiActive);
 
-            // Process optional local-helper keybinds ONLY when LocalHelperManager permits current server!
+            // Process optional local-helper keybinds ONLY when LocalHelperManager permits current server;
+            // drain buffered clicks when disallowed so public-server presses never fire later on localhost!
             if (helperManager.areHelpersAllowed()) {
-                long tick = stateTracker.getTrackerTickClock();
+                long tick = helperManager.getHelperTickClock();
                 var hb = helperManager.getHotbarHelper();
                 var cmb = helperManager.getCombatHelper();
                 var sb = helperManager.getShopBridgeHelper();
@@ -256,6 +262,8 @@ public final class FifthNNClient implements ClientModInitializer {
                 while (keyHelperQuickFireball.consumeClick()) cmb.triggerQuickUtility(mc, config, FifthNNSchema.ITEM_FIREBALL, tick);
                 while (keyHelperQuickPearl.consumeClick()) cmb.triggerQuickUtility(mc, config, FifthNNSchema.ITEM_ENDER_PEARL, tick);
                 while (keyHelperQuickBuy.consumeClick()) sb.triggerQuickBuyRushKit(mc, config, tick);
+            } else {
+                drainHelperKeyClicks();
             }
 
             if (aiActive) {
@@ -264,9 +272,9 @@ public final class FifthNNClient implements ClientModInitializer {
         });
 
         UseBlockCallback.EVENT.register((player, world, hand, hitResult) -> {
-            if (world.isClientSide() && hitResult != null) {
+            if (world.isClientSide() && hitResult != null && player.getItemInHand(hand).getItem() instanceof BlockItem) {
                 stateTracker.markBlockPlaced(hitResult.getBlockPos().relative(hitResult.getDirection()));
-                helperManager.onBlockPlaced(stateTracker.getTrackerTickClock());
+                helperManager.onBlockPlaced(helperManager.getHelperTickClock());
             }
             return InteractionResult.PASS;
         });
@@ -279,7 +287,7 @@ public final class FifthNNClient implements ClientModInitializer {
         AttackEntityCallback.EVENT.register((player, world, hand, entity, hitResult) -> {
             if (world.isClientSide()) {
                 stateTracker.markDamageDealt();
-                helperManager.onMeleeAttack(stateTracker.getTrackerTickClock());
+                helperManager.onMeleeAttack(helperManager.getHelperTickClock());
             }
             return InteractionResult.PASS;
         });
@@ -306,6 +314,21 @@ public final class FifthNNClient implements ClientModInitializer {
             recorder.onClientShutdown();
             onnxEngine.close();
         });
+    }
+
+    private static void drainHelperKeyClicks() {
+        while (keyHelperSword.consumeClick()) {}
+        while (keyHelperBlocks.consumeClick()) {}
+        while (keyHelperGapple.consumeClick()) {}
+        while (keyHelperPearl.consumeClick()) {}
+        while (keyHelperFireball.consumeClick()) {}
+        while (keyHelperPrepBreak.consumeClick()) {}
+        while (keyHelperClutch.consumeClick()) {}
+        while (keyHelperWTap.consumeClick()) {}
+        while (keyHelperBlockhit.consumeClick()) {}
+        while (keyHelperQuickFireball.consumeClick()) {}
+        while (keyHelperQuickPearl.consumeClick()) {}
+        while (keyHelperQuickBuy.consumeClick()) {}
     }
 
     public static FifthNNConfig getConfig() { return config; }

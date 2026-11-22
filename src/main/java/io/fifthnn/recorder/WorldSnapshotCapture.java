@@ -139,7 +139,9 @@ public final class WorldSnapshotCapture {
         capturePanoramicLidar(player, level, fr, stateTracker);
 
         // 5. Entities: ArmorStand holograms FIRST (identifies shop NPC zones & gens), then Players & Threats!
-        captureEntities(player, level, fr, stateTracker, tickIndex, config.recordObserverEntities);
+        // Use monotonic stateTracker clock (+1) so Phase 2 AI gets exact remote velocities even when recording is OFF!
+        long velClock = stateTracker.getTrackerTickClock() + 1L;
+        captureEntities(player, level, fr, stateTracker, velClock, config.recordObserverEntities);
 
         // 6. Populate persistent ArenaLandmarkCache (all known beds, gens, shopkeepers across whole map!)
         cache.fillLandmarks(fr, fr.ownTeamId, fr.x, fr.y, fr.z);
@@ -536,23 +538,25 @@ public final class WorldSnapshotCapture {
             fr.guiSlotCount = 0;
             return;
         }
-        if (screen instanceof InventoryScreen) {
-            fr.guiType = FifthNNSchema.GUI_PLAYER_INV;
-        } else if (screen instanceof AbstractContainerScreen<?> acs) {
-            String title = BedWarsStateTracker.stripFormatting(acs.getTitle().getString()).toLowerCase(Locale.ROOT);
-            if (title.contains("upgrade") || title.contains("trap")) {
-                fr.guiType = FifthNNSchema.GUI_UPGRADE_SHOP;
-            } else if (title.contains("shop") || title.contains("quick buy") || title.contains("blocks")
-                    || title.contains("melee") || title.contains("armor") || title.contains("tools")
-                    || title.contains("utility") || title.contains("potions") || title.contains("ranged")) {
-                fr.guiType = FifthNNSchema.GUI_ITEM_SHOP;
-                fr.shopTab = detectShopTab(title);
-            } else if (title.contains("ender chest")) {
-                fr.guiType = FifthNNSchema.GUI_ENDER_CHEST;
-            } else if (title.contains("chest")) {
-                fr.guiType = FifthNNSchema.GUI_TEAM_CHEST;
+        if (screen instanceof AbstractContainerScreen<?> acs) {
+            if (screen instanceof InventoryScreen) {
+                fr.guiType = FifthNNSchema.GUI_PLAYER_INV;
             } else {
-                fr.guiType = FifthNNSchema.GUI_OTHER;
+                String title = BedWarsStateTracker.stripFormatting(acs.getTitle().getString()).toLowerCase(Locale.ROOT);
+                if (title.contains("upgrade") || title.contains("trap")) {
+                    fr.guiType = FifthNNSchema.GUI_UPGRADE_SHOP;
+                } else if (title.contains("shop") || title.contains("quick buy") || title.contains("blocks")
+                        || title.contains("melee") || title.contains("armor") || title.contains("tools")
+                        || title.contains("utility") || title.contains("potions") || title.contains("ranged")) {
+                    fr.guiType = FifthNNSchema.GUI_ITEM_SHOP;
+                    fr.shopTab = detectShopTab(title);
+                } else if (title.contains("ender chest")) {
+                    fr.guiType = FifthNNSchema.GUI_ENDER_CHEST;
+                } else if (title.contains("chest")) {
+                    fr.guiType = FifthNNSchema.GUI_TEAM_CHEST;
+                } else {
+                    fr.guiType = FifthNNSchema.GUI_OTHER;
+                }
             }
 
             AbstractContainerMenu menu = acs.getMenu();
@@ -569,9 +573,8 @@ public final class WorldSnapshotCapture {
                 fr.guiFlags[i] = (byte) flags;
             }
             return;
-        } else {
-            fr.guiType = FifthNNSchema.GUI_OTHER;
         }
+        fr.guiType = FifthNNSchema.GUI_OTHER;
         fr.guiSlotCount = 0;
     }
 

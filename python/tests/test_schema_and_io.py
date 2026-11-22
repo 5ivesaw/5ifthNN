@@ -50,6 +50,7 @@ from fifthnn.schema import (
     SCHEMA_VERSION,
     dequantize_angle_mulaw,
     quantize_angle_mulaw,
+    server_profile_to_id,
 )
 
 
@@ -71,6 +72,7 @@ def _build_frame_payload(
     own_bed_alive: int = 1,
     diamonds: int = 2,
     gui_type: int = 0,
+    gui_click_slot: int = -1,
     selected_slot: int = 2,
     hotbar_key: int = 2,
 ) -> bytes:
@@ -108,7 +110,7 @@ def _build_frame_payload(
     payload += _S_GUI_HDR.pack(gui_type, 0, 0x0F, 0)
     payload += _S_MATCH.pack(own_bed_alive, 0x07, 3, 1, 0, 0, 0, 0, 1, 1, 600, event_flags)
     payload += bytes([0])
-    payload += _S_INPUT.pack(key_mask, 12.0, -3.0, delta_yaw, -1.0, left_clicks, right_clicks, hotbar_key, -1, 0, 0, 0.0)
+    payload += _S_INPUT.pack(key_mask, 12.0, -3.0, delta_yaw, -1.0, left_clicks, right_clicks, hotbar_key, gui_click_slot, 0, 0, 0.0)
     return bytes(payload)
 
 
@@ -295,6 +297,33 @@ def test_schema_v1_backward_compat() -> None:
         assert frames[0].tick_index == 5 and frames[0].episode_id == 1
 
 
+def test_java_parity_server_profile_and_3d_landmarks() -> None:
+    # Exact Java Math.floorMod(profile.hashCode(), 8) parity (verified against Java 25 JVM, independent of PYTHONHASHSEED!)
+    assert server_profile_to_id("") == 0
+    assert server_profile_to_id(None) == 0
+    assert server_profile_to_id("pika") == 7
+    assert server_profile_to_id("local") == 3
+    assert server_profile_to_id("jartex") == 4
+    assert server_profile_to_id("hypixel") == 5
+    assert server_profile_to_id("mineberry") == 3
+
+    # 3D landmark selection parity: closer in 3D (dist=5) must beat closer in 2D (dx=2, dy=20 -> 3D dist=20.1)
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "lm3d.5nn.gz"
+        _write_synthetic_recording(p, [(1, 1, QFLAG_VALID_IN_GAME)], schema_version=2)
+        _, frames = read_recording(p, valid_only=True)
+        fr = frames[0]
+        fr.landmarks = [
+            (3, 0, fr.x + 2.0, fr.y + 20.0, fr.z, 1),   # 2D dist=2, 3D dist=20.1
+            (3, 0, fr.x + 5.0, fr.y, fr.z, 1),           # 2D dist=5, 3D dist=5.0 (true closest!)
+        ]
+        _, _, obs = encode_frame_obs(fr, server_profile_id=server_profile_to_id("pika"))
+        s0 = 128 + 6 * 18 + 6 * 10
+        assert abs(obs[s0 + 95] - (7 / 8.0)) < 1e-6
+        # Diamond landmark slot is s0 + 108: (present, dist/128, fwd/dist, right/dist)
+        assert abs(obs[s0 + 108 + 1] - (5.0 / 128.0)) < 1e-3, f"Picked 2D-closer landmark instead of 3D: {obs[s0 + 108 + 1]}"
+
+
 if __name__ == "__main__":
     test_mulaw_roundtrip()
     test_binary_io_v2_mirror_and_togglesprint()
@@ -302,4 +331,5 @@ if __name__ == "__main__":
     test_invariant1_tactical_void_vs_accidental_slip()
     test_invariant3_ring_buffer_gaps_pearl_and_sidecar_tags()
     test_schema_v1_backward_compat()
-    print("ALL 5ifthNN v0.3 Python schema, causal, void, hotbar & sidecar tests PASSED!")
+    test_java_parity_server_profile_and_3d_landmarks()
+    print("ALL 5ifthNN v0.4.1 Python schema, parity, causal, void, hotbar & sidecar tests PASSED!")

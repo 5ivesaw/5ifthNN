@@ -33,6 +33,9 @@ public final class ShopAndBridgeHelper {
     private int unsneakTicksRemaining = 0;
 
     public void reset(Minecraft mc) {
+        if (unsneakTicksRemaining > 0 && mc != null && mc.options != null) {
+            mc.options.keyShift.setDown(LocalHelperManager.isPhysicallyHeld(mc, mc.options.keyShift));
+        }
         queuedItemCats.clear();
         nextShopClickTick = -1L;
         pendingUnsneakStartTick = -1L;
@@ -47,7 +50,7 @@ public final class ShopAndBridgeHelper {
     /** Queue a basic rush kit (Wool -> Stone Sword -> Golden Apple) when BedWars Item Shop is open. */
     public void triggerQuickBuyRushKit(Minecraft mc, FifthNNConfig cfg, long tick) {
         if (!cfg.enableShopQuickBuy || mc == null || mc.player == null) return;
-        if (!(mc.gui.screen() instanceof AbstractContainerScreen<?>)) return;
+        if (!LocalHelperManager.isItemShopScreen(mc.gui.screen())) return;
         queuedItemCats.clear();
         queuedItemCats.addLast(FifthNNSchema.ITEM_WOOL);
         queuedItemCats.addLast(FifthNNSchema.ITEM_STONE_SWORD);
@@ -59,26 +62,36 @@ public final class ShopAndBridgeHelper {
         LocalPlayer p = mc.player;
         if (p == null || mc.level == null || mc.options == null) return;
 
-        // 1. Human-Paced Shop Quick-Buy Preset
+        // 1. Human-Paced Shop Quick-Buy Preset (strictly gated on Item Shop title + actual affordability!)
         if (!queuedItemCats.isEmpty()) {
             boolean stationary = !mc.options.keyUp.isDown() && !mc.options.keyDown.isDown()
                     && !mc.options.keyLeft.isDown() && !mc.options.keyRight.isDown();
-            if (!cfg.enableShopQuickBuy || !(mc.gui.screen() instanceof AbstractContainerScreen<?> acs)
-                    || !stationary || (lastFrame != null && lastFrame.guiType != FifthNNSchema.GUI_ITEM_SHOP)) {
+            if (!cfg.enableShopQuickBuy || !LocalHelperManager.isItemShopScreen(mc.gui.screen())
+                    || !(mc.gui.screen() instanceof AbstractContainerScreen<?> acs) || !stationary) {
                 queuedItemCats.clear();
             } else if (tick >= nextShopClickTick && mc.gameMode != null) {
-                int wantCat = queuedItemCats.pollFirst();
                 AbstractContainerMenu menu = acs.getMenu();
-                int slotIdx = findShopSlotByCat(menu, wantCat);
-                if (slotIdx >= 0) {
-                    mc.gameMode.handleContainerInput(menu.containerId, slotIdx, 0, ContainerInput.PICKUP, p);
+                boolean clicked = false;
+                while (!queuedItemCats.isEmpty() && !clicked) {
+                    int wantCat = queuedItemCats.pollFirst();
+                    if (!canAffordPresetItem(p, wantCat)) continue;
+                    int slotIdx = findShopSlotByCat(menu, wantCat);
+                    if (slotIdx >= 0) {
+                        mc.gameMode.handleContainerInput(menu.containerId, slotIdx, 0, ContainerInput.PICKUP, p);
+                        clicked = true;
+                    }
                 }
-                nextShopClickTick = tick + 3L + rng.nextInt(4); // 3-6 ticks (150-300ms) realistic travel!
+                if (clicked && !queuedItemCats.isEmpty()) {
+                    nextShopClickTick = tick + 3L + rng.nextInt(4); // 3-6 ticks (150-300ms) realistic travel!
+                }
             }
         }
 
         // 2. Optional Post-Place Speed-Bridge Unsneak Assist (clamped strictly to 1-2 ticks, OFF on jump/air!)
         if (!cfg.enableBridgeUnsneak || mc.gui.screen() != null || mc.options.keyJump.isDown() || !p.onGround()) {
+            if (unsneakTicksRemaining > 0) {
+                mc.options.keyShift.setDown(LocalHelperManager.isPhysicallyHeld(mc, mc.options.keyShift));
+            }
             pendingUnsneakStartTick = -1L;
             unsneakTicksRemaining = 0;
             return;
@@ -97,12 +110,40 @@ public final class ShopAndBridgeHelper {
 
         if (unsneakTicksRemaining > 0) {
             if (!solidUnder) {
-                unsneakTicksRemaining = 0; // Safety cancel if center block under feet is AIR!
+                // Safety cancel if center block under feet is AIR -> immediately restore physical Shift!
+                unsneakTicksRemaining = 0;
+                mc.options.keyShift.setDown(LocalHelperManager.isPhysicallyHeld(mc, mc.options.keyShift));
             } else {
                 mc.options.keyShift.setDown(false);
                 unsneakTicksRemaining--;
+                if (unsneakTicksRemaining == 0) {
+                    mc.options.keyShift.setDown(LocalHelperManager.isPhysicallyHeld(mc, mc.options.keyShift));
+                }
             }
         }
+    }
+
+    private static boolean canAffordPresetItem(LocalPlayer p, int itemCat) {
+        int iron = countItemCat(p, FifthNNSchema.ITEM_IRON_INGOT);
+        int gold = countItemCat(p, FifthNNSchema.ITEM_GOLD_INGOT);
+        return switch (itemCat) {
+            case FifthNNSchema.ITEM_WOOL -> iron >= 4;
+            case FifthNNSchema.ITEM_STONE_SWORD -> iron >= 10;
+            case FifthNNSchema.ITEM_GOLDEN_APPLE -> gold >= 3;
+            default -> true;
+        };
+    }
+
+    private static int countItemCat(LocalPlayer p, int cat) {
+        int total = 0;
+        var inv = p.getInventory();
+        for (int i = 0; i < 36; i++) {
+            var st = inv.getItem(i);
+            if (!st.isEmpty() && WorldSnapshotCapture.classifyItem(st) == cat) {
+                total += st.getCount();
+            }
+        }
+        return total;
     }
 
     private static int findShopSlotByCat(AbstractContainerMenu menu, int targetCat) {

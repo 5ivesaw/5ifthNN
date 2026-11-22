@@ -318,6 +318,9 @@ def encode_frame_obs(
         obs[slot_offset + 2] = fwd / dist
         obs[slot_offset + 3] = right / dist
 
+    def _lm_dist_sq(lm_t: Tuple[int, int, float, float, float, int]) -> float:
+        return (lm_t[2] - fr.x) ** 2 + (lm_t[3] - fr.y) ** 2 + (lm_t[4] - fr.z) ** 2
+
     lm_home = None
     lm_enemy_beds = []
     lm_diamond = None
@@ -326,23 +329,23 @@ def encode_frame_obs(
     lm_upgrade = None
     for lm in fr.landmarks:
         ltype = lm[0]
-        dist_sq = (lm[2] - fr.x) ** 2 + (lm[3] - fr.y) ** 2 + (lm[4] - fr.z) ** 2
+        dist_sq = _lm_dist_sq(lm)
         if ltype in (0, 2):  # OWN_BED or HOME_SPAWN
             if lm_home is None or ltype == 0:
                 lm_home = lm
         elif ltype == 1 and lm[5] > 0:  # living ENEMY_BED
             lm_enemy_beds.append((dist_sq, lm))
         elif ltype == 3:
-            if lm_diamond is None or dist_sq < ((lm_diamond[2] - fr.x) ** 2 + (lm_diamond[4] - fr.z) ** 2):
+            if lm_diamond is None or dist_sq < _lm_dist_sq(lm_diamond):
                 lm_diamond = lm
         elif ltype == 4:
-            if lm_emerald is None or dist_sq < ((lm_emerald[2] - fr.x) ** 2 + (lm_emerald[4] - fr.z) ** 2):
+            if lm_emerald is None or dist_sq < _lm_dist_sq(lm_emerald):
                 lm_emerald = lm
         elif ltype == 5:
-            if lm_shop is None or dist_sq < ((lm_shop[2] - fr.x) ** 2 + (lm_shop[4] - fr.z) ** 2):
+            if lm_shop is None or dist_sq < _lm_dist_sq(lm_shop):
                 lm_shop = lm
         elif ltype == 6:
-            if lm_upgrade is None or dist_sq < ((lm_upgrade[2] - fr.x) ** 2 + (lm_upgrade[4] - fr.z) ** 2):
+            if lm_upgrade is None or dist_sq < _lm_dist_sq(lm_upgrade):
                 lm_upgrade = lm
 
     lm_enemy_beds.sort(key=lambda x: x[0])

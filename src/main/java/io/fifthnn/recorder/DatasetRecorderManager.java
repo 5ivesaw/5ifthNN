@@ -56,6 +56,7 @@ public final class DatasetRecorderManager {
     private TagSidecarWriter activeTags;
     private final Deque<FrameData> ringBuffer = new ArrayDeque<>(RING_BUFFER_TICKS + 4);
 
+    private boolean stopping = false;
     private long sessionTickIndex = 0;
     private long sessionStartWallMs = 0;
     private int postQuarantineTicksRemaining = 0;
@@ -142,7 +143,7 @@ public final class DatasetRecorderManager {
         Path outFile = config.getRecordingsDir().resolve(filename);
 
         Map<String, Object> header = new LinkedHashMap<>();
-        header.put("modVersion", "0.4.0");
+        header.put("modVersion", "0.4.1");
         header.put("mcVersion", "26.3");
         header.put("schemaVersion", FifthNNSchema.SCHEMA_VERSION);
         header.put("recordingMode", mode.name());
@@ -213,83 +214,88 @@ public final class DatasetRecorderManager {
     }
 
     private synchronized void stopRecording(Minecraft mc, String reason, boolean allowAutoPrune) {
-        if (activeWriter == null) {
-            state = RecorderState.STANDBY;
+        if (activeWriter == null || stopping) {
+            if (activeWriter == null) state = RecorderState.STANDBY;
             return;
         }
-        // Flush any remaining clean frames from the 40-tick ring buffer before closing
-        flushRingBufferAll();
+        stopping = true;
+        try {
+            // Flush any remaining clean frames from the 40-tick ring buffer before closing
+            flushRingBufferAll();
 
-        BinaryDatasetWriter w = activeWriter;
-        TagSidecarWriter t = activeTags;
-        boolean wasManual = (state == RecorderState.MANUAL_RECORDING);
-        activeWriter = null;
-        activeTags = null;
-        state = RecorderState.STANDBY;
+            BinaryDatasetWriter w = activeWriter;
+            TagSidecarWriter t = activeTags;
+            boolean wasManual = (state == RecorderState.MANUAL_RECORDING);
+            activeWriter = null;
+            activeTags = null;
+            state = RecorderState.STANDBY;
 
-        w.close();
-        if (t != null) t.close();
+            w.close();
+            if (t != null) t.close();
 
-        long validFrames = w.getValidFramesWritten();
-        double validSec = validFrames / 20.0;
-        double validMin = validFrames / 1200.0;
-        double idlePct = validFrames > 0 ? (100.0 * sessionIdleTicks) / validFrames : 100.0;
-        double flickerRate = sessionBlocksPlaced >= 10 ? ((double) sessionFlickers / sessionBlocksPlaced) : 0.0;
-        double lagbacksPerMin = validMin > 0.25 ? (sessionLagbacks / validMin) : 0.0;
+            long validFrames = w.getValidFramesWritten();
+            double validSec = validFrames / 20.0;
+            double validMin = validFrames / 1200.0;
+            double idlePct = validFrames > 0 ? (100.0 * sessionIdleTicks) / validFrames : 100.0;
+            double flickerRate = sessionBlocksPlaced >= 10 ? ((double) sessionFlickers / sessionBlocksPlaced) : 0.0;
+            double lagbacksPerMin = validMin > 0.25 ? (sessionLagbacks / validMin) : 0.0;
 
-        // End-of-match auto-prune for useless / severely corrupted auto-recorded matches
-        if (allowAutoPrune) {
-            String pruneReason = null;
-            if (validSec < 20.0) {
-                pruneReason = "too short (<20s)";
-            } else if (idlePct > 75.0) {
-                pruneReason = String.format("mostly AFK (%.0f%% idle)", idlePct);
-            } else if (flickerRate > 0.30 || lagbacksPerMin > 8.0) {
-                pruneReason = String.format("severe lag/flickers (FLK=%d, RB=%d)", sessionFlickers, sessionLagbacks);
-                notifyPlayer(mc, "§e[5ifthNN] Skipped laggy match (" + pruneReason + ") — use ViaFabricPlus 1.8.x!");
+            // End-of-match auto-prune for useless / severely corrupted auto-recorded matches
+            if (allowAutoPrune) {
+                String pruneReason = null;
+                if (validSec < 20.0) {
+                    pruneReason = "too short (<20s)";
+                } else if (idlePct > 75.0) {
+                    pruneReason = String.format("mostly AFK (%.0f%% idle)", idlePct);
+                } else if (flickerRate > 0.30 || lagbacksPerMin > 8.0) {
+                    pruneReason = String.format("severe lag/flickers (FLK=%d, RB=%d)", sessionFlickers, sessionLagbacks);
+                    notifyPlayer(mc, "§e[5ifthNN] Skipped laggy match (" + pruneReason + ") — use ViaFabricPlus 1.8.x!");
+                }
+                if (pruneReason != null) {
+                    deleteRecordingBundle(w.getFilePath());
+                    lastStatusMessage = "Auto-pruned (" + pruneReason + ")";
+                    LOGGER.info("Auto-pruned recording {} ({})", w.getFilePath().getFileName(), pruneReason);
+                    return;
+                }
             }
-            if (pruneReason != null) {
-                deleteRecordingBundle(w.getFilePath());
-                lastStatusMessage = "Auto-pruned (" + pruneReason + ")";
-                LOGGER.info("Auto-pruned recording {} ({})", w.getFilePath().getFileName(), pruneReason);
-                return;
+
+            // Compute quality grade & enrich .meta.json sidecar
+            String grade = computeQualityGrade(validSec, idlePct, flickerRate, lagbacksPerMin);
+            enrichMetaSidecar(w.getFilePath(), grade, validMin, idlePct);
+            enforceRollingStorageCap();
+            refreshDatasetTotals();
+
+            int episodes = Math.max(1, stateTracker.getEpisodeId() - startEpisodeId + 1);
+            lastStatusMessage = String.format("Saved Grade %s (%.1fm)", grade, validMin);
+            if (wasManual) {
+                String summary = String.format(
+                        "§e[5ifthNN] STOPPED §7(%s) §f[Grade %s]\n"
+                                + "§f  Valid In-Game: §a%.1f min §7(%d ticks | skipped=%d | quarantined=%d)\n"
+                                + "§f  Activity: §b%d ep(s) §7| §e%d shop §7| §a%d blocks §7| §c%d LMB §7| §6RB:%d FLK:%d\n"
+                                + "§f  File: §7%s (%.2f MB)",
+                        reason, grade, validMin, validFrames, sessionLobbySkipped, sessionQuarantinedTicks,
+                        episodes, sessionShopClicks, sessionBlocksPlaced, sessionCombatClicks,
+                        sessionLagbacks, sessionFlickers,
+                        w.getFilePath().getFileName(), w.getBytesWrittenEst() / (1024.0 * 1024.0)
+                );
+                notifyPlayer(mc, summary);
+            } else {
+                double bridgePct = validFrames > 0 ? (100.0 * sessionBridgeTicks) / validFrames : 0.0;
+                double pvpPct = validFrames > 0 ? (100.0 * sessionPvpTicks) / validFrames : 0.0;
+                showToast(String.format("✓ Grade %s (%.1fm)", grade, validMin));
+                notifyPlayer(mc, String.format(
+                        "§a[5ifthNN] Saved Grade %s §7(%.1fm | Bridge %.0f%% | PvP %.0f%% | Shop %d | Blocks %d)",
+                        grade, validMin, bridgePct, pvpPct, sessionShopClicks, sessionBlocksPlaced
+                ));
+                if (config.autoRequeueEnabled && config.autoRequeueCommand != null && !config.autoRequeueCommand.isBlank()) {
+                    pendingRequeueAtMs = System.currentTimeMillis() + 2500L + rng.nextInt(2000); // 2.5-4.5s random delay
+                }
             }
+            LOGGER.info("Stopped recording ({}) [Grade {}]: {} valid frames, RB={}, FLK={}",
+                    reason, grade, validFrames, sessionLagbacks, sessionFlickers);
+        } finally {
+            stopping = false;
         }
-
-        // Compute quality grade & enrich .meta.json sidecar
-        String grade = computeQualityGrade(validSec, idlePct, flickerRate, lagbacksPerMin);
-        enrichMetaSidecar(w.getFilePath(), grade, validMin, idlePct);
-        enforceRollingStorageCap();
-        refreshDatasetTotals();
-
-        int episodes = Math.max(1, stateTracker.getEpisodeId() - startEpisodeId + 1);
-        lastStatusMessage = String.format("Saved Grade %s (%.1fm)", grade, validMin);
-        if (wasManual) {
-            String summary = String.format(
-                    "§e[5ifthNN] STOPPED §7(%s) §f[Grade %s]\n"
-                            + "§f  Valid In-Game: §a%.1f min §7(%d ticks | skipped=%d | quarantined=%d)\n"
-                            + "§f  Activity: §b%d ep(s) §7| §e%d shop §7| §a%d blocks §7| §c%d LMB §7| §6RB:%d FLK:%d\n"
-                            + "§f  File: §7%s (%.2f MB)",
-                    reason, grade, validMin, validFrames, sessionLobbySkipped, sessionQuarantinedTicks,
-                    episodes, sessionShopClicks, sessionBlocksPlaced, sessionCombatClicks,
-                    sessionLagbacks, sessionFlickers,
-                    w.getFilePath().getFileName(), w.getBytesWrittenEst() / (1024.0 * 1024.0)
-            );
-            notifyPlayer(mc, summary);
-        } else {
-            double bridgePct = validFrames > 0 ? (100.0 * sessionBridgeTicks) / validFrames : 0.0;
-            double pvpPct = validFrames > 0 ? (100.0 * sessionPvpTicks) / validFrames : 0.0;
-            showToast(String.format("✓ Grade %s (%.1fm)", grade, validMin));
-            notifyPlayer(mc, String.format(
-                    "§a[5ifthNN] Saved Grade %s §7(%.1fm | Bridge %.0f%% | PvP %.0f%% | Shop %d | Blocks %d)",
-                    grade, validMin, bridgePct, pvpPct, sessionShopClicks, sessionBlocksPlaced
-            ));
-            if (config.autoRequeueEnabled && config.autoRequeueCommand != null && !config.autoRequeueCommand.isBlank()) {
-                pendingRequeueAtMs = System.currentTimeMillis() + 2500L + rng.nextInt(2000); // 2.5-4.5s random delay
-            }
-        }
-        LOGGER.info("Stopped recording ({}) [Grade {}]: {} valid frames, RB={}, FLK={}",
-                reason, grade, validFrames, sessionLagbacks, sessionFlickers);
     }
 
     /**
@@ -326,7 +332,8 @@ public final class DatasetRecorderManager {
                 if (standbyPollCounter >= 5) {
                     standbyPollCounter = 0;
                     stateTracker.preCaptureUpdate(mc, mc.player);
-                    stateTracker.getLandmarkCache().tickScan(mc.player, mc.level, true);
+                    boolean inGameStandby = stateTracker.getMatchPhase() == FifthNNSchema.MATCH_PHASE_IN_GAME;
+                    stateTracker.getLandmarkCache().tickScan(mc.player, mc.level, inGameStandby);
                     if (stateTracker.isConfidentBedWarsMatch(mc, mc.player)) {
                         startRecording(mc, FifthNNSchema.RecordingMode.FULL_MATCH, false);
                     }

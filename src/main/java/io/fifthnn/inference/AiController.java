@@ -1,10 +1,10 @@
 package io.fifthnn.inference;
 
 import io.fifthnn.config.FifthNNConfig;
+import io.fifthnn.helper.LocalHelperManager;
 import io.fifthnn.recorder.FrameData;
 import io.fifthnn.schema.FifthNNSchema;
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.multiplayer.ServerData;
 import net.minecraft.network.chat.Component;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -13,7 +13,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 
 /**
  * Phase 2 AI Controller: manages ONNX model hot-loading, local-server safety interlock,
@@ -200,13 +199,8 @@ public final class AiController {
         }
     }
 
-    private static boolean isLocalOrSingleplayer(Minecraft mc) {
-        if (mc.isLocalServer()) return true;
-        ServerData srv = mc.getCurrentServer();
-        if (srv == null) return true;
-        String ip = srv.ip.toLowerCase(Locale.ROOT);
-        return ip.startsWith("localhost") || ip.startsWith("127.") || ip.startsWith("192.168.")
-                || ip.startsWith("10.") || ip.startsWith("0.0.0.0") || ip.equals("::1");
+    private boolean isLocalOrSingleplayer(Minecraft mc) {
+        return LocalHelperManager.isPermittedServer(mc, config);
     }
 
     private static void notify(Minecraft mc, String msg) {
