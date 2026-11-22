@@ -11,6 +11,7 @@ import io.fifthnn.recorder.BedWarsStateTracker;
 import io.fifthnn.recorder.DatasetRecorderManager;
 import io.fifthnn.recorder.FrameData;
 import io.fifthnn.recorder.InputTracker;
+import io.fifthnn.recorder.ViaFabricPlusBridge;
 import io.fifthnn.recorder.ViaFlickerGuard;
 import io.fifthnn.ui.FifthNNControlScreen;
 import io.fifthnn.ui.FifthNNDependencyScreen;
@@ -136,6 +137,7 @@ public final class FifthNNClient implements ClientModInitializer {
 
     private void registerTitleScreenPrompt() {
         ScreenEvents.AFTER_INIT.register((client, screen, scaledWidth, scaledHeight) -> {
+            ViaFabricPlusBridge.ensureDefault18(config);
             if (!(screen instanceof TitleScreen)) return;
             if (!FifthNNDependencyScreen.hasAnyMissingRecommendation(config)) return;
 
@@ -231,6 +233,9 @@ public final class FifthNNClient implements ClientModInitializer {
             stateTracker.onChatMessage(message.getString(), self);
         });
 
+        ClientPlayConnectionEvents.JOIN.register((handler, sender, mc) ->
+                ViaFabricPlusBridge.ensureDefault18(config)
+        );
         ClientPlayConnectionEvents.DISCONNECT.register((handler, mc) -> {
             aiController.onDisconnect(mc);
             recorder.onDisconnect(mc);

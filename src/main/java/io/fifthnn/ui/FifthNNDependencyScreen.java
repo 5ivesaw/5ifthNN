@@ -139,7 +139,7 @@ public final class FifthNNDependencyScreen extends Screen {
             y += 11;
             drawCentered(graphics, "causing 1-tick bridging flickers, water-clutch swim lagbacks & sneak hitbox desyncs.", cx, y, gray);
             y += 13;
-            drawCentered(graphics, "Set your BedWars server to §b1.8.x §7in ViaFabricPlus for native 1.8 bridging feel.", cx, y, cyan);
+            drawCentered(graphics, "ViaFabricPlus will auto-set to §b1.8.x §7by default so BedWars works out of the box.", cx, y, cyan);
             y += 12;
             drawCentered(graphics, "§a(5ifthNN's built-in Flicker Guard is ON as a safe fallback even without it.)", cx, y, green);
             y += 16;

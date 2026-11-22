@@ -85,6 +85,22 @@ public final class FifthNNCommands {
                             ctx.getSource().sendFeedback(Component.literal("§a[5ifthNN] HUD set to Full telemetry stats"));
                             return 1;
                         })))
+                .then(ClientCommands.literal("via18")
+                        .then(ClientCommands.literal("on").executes(ctx -> {
+                            FifthNNConfig cfg = FifthNNClient.getConfig();
+                            cfg.autoSetViaFabricPlus18 = true;
+                            cfg.save();
+                            io.fifthnn.recorder.ViaFabricPlusBridge.ensureDefault18(cfg);
+                            ctx.getSource().sendFeedback(Component.literal("§a[5ifthNN] Auto-set ViaFabricPlus 1.8.x ON"));
+                            return 1;
+                        }))
+                        .then(ClientCommands.literal("off").executes(ctx -> {
+                            FifthNNConfig cfg = FifthNNClient.getConfig();
+                            cfg.autoSetViaFabricPlus18 = false;
+                            cfg.save();
+                            ctx.getSource().sendFeedback(Component.literal("§e[5ifthNN] Auto-set ViaFabricPlus 1.8.x OFF"));
+                            return 1;
+                        })))
                 .then(ClientCommands.literal("rec")
                         .then(ClientCommands.literal("start")
                                 .executes(ctx -> {

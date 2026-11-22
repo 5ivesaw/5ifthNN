@@ -29,6 +29,7 @@ public final class FifthNNConfig {
     public boolean showHudOverlay = true;
     public boolean minimalHudMode = true;
     public boolean enableViaFlickerGuard = true;
+    public boolean autoSetViaFabricPlus18 = true;
 
     // Smart dependency prompt state (never nags every launch)
     public long lastDependencyPromptMs = 0L;
