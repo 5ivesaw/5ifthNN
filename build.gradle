@@ -68,10 +68,10 @@ jar {
 }
 
 def onnxMetaDir = layout.buildDirectory.dir("generated/onnx-companion")
+def ortVersion = project.onnxruntime_version.toString()
 
 tasks.register("generateOnnxCompanionMeta") {
-	def ortVer = project.onnxruntime_version
-	inputs.property("ortVer", ortVer)
+	inputs.property("ortVer", ortVersion)
 	outputs.dir(onnxMetaDir)
 	doLast {
 		def dir = onnxMetaDir.get().asFile
@@ -79,14 +79,14 @@ tasks.register("generateOnnxCompanionMeta") {
 		new File(dir, "fabric.mod.json").text = """{
   "schemaVersion": 1,
   "id": "fifthnn-onnxruntime",
-  "version": "${ortVer}",
+  "version": "${ortVersion}",
   "name": "5ifthNN ONNX Runtime Companion",
   "description": "One-time ONNX Runtime library mod for 5ifthNN Phase 2 inference. Only needed when running trained .onnx models.",
   "authors": ["5ivesaw"],
   "license": "MIT",
   "environment": "client",
   "jars": [
-    { "file": "META-INF/jars/onnxruntime-${ortVer}.jar" }
+    { "file": "META-INF/jars/onnxruntime-${ortVersion}.jar" }
   ]
 }
 """
@@ -96,12 +96,12 @@ tasks.register("generateOnnxCompanionMeta") {
 tasks.register("buildOnnxRuntimeAddon", Jar) {
 	dependsOn(tasks.named("generateOnnxCompanionMeta"))
 	archiveBaseName.set("5ifthNN-OnnxRuntime")
-	archiveVersion.set(project.onnxruntime_version)
+	archiveVersion.set(ortVersion)
 	destinationDirectory.set(layout.buildDirectory.dir("onnx-addon"))
 	from(onnxMetaDir)
 	from(configurations.onnxBundle) {
 		into("META-INF/jars")
-		rename { "onnxruntime-${project.onnxruntime_version}.jar" }
+		rename { "onnxruntime-${ortVersion}.jar" }
 	}
 }
 

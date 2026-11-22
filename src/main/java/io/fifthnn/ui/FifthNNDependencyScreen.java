@@ -12,6 +12,7 @@ import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
 import net.minecraft.util.ARGB;
 
+import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
@@ -73,7 +74,7 @@ public final class FifthNNDependencyScreen extends Screen {
                     Component.literal("§aOpen Official Modrinth (ViaFabricPlus)"),
                     btn -> {
                         if (this.minecraft != null) {
-                            ConfirmLinkScreen.confirmLinkNow(this, VIA_MODRINTH_URL);
+                            ConfirmLinkScreen.confirmLinkNow(this, URI.create(VIA_MODRINTH_URL));
                         }
                     }
             ).bounds(cx - 155, y, 200, 20).build());

@@ -140,7 +140,7 @@ public final class FifthNNClient implements ClientModInitializer {
             if (!FifthNNDependencyScreen.hasAnyMissingRecommendation(config)) return;
 
             // Small unobtrusive corner button to reopen recommended dependency menu anytime
-            Screens.getButtons(screen).add(Button.builder(
+            Screens.getWidgets(screen).add(Button.builder(
                     Component.literal("§e⚠ 5ifthNN Deps"),
                     btn -> client.gui.setScreen(new FifthNNDependencyScreen(screen))
             ).bounds(scaledWidth - 102, 6, 96, 18).build());
