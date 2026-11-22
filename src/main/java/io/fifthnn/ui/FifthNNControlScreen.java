@@ -340,7 +340,7 @@ public final class FifthNNControlScreen extends Screen {
         int gray = ARGB.opaque(0xB0B8C8);
         int cyan = ARGB.opaque(0x38BDF8);
 
-        drawCentered(graphics, "§l5ifthNN v0.5.0 §r§7— Pure NN BedWars AI (MC 26.3 / 1.8 PvP)", cx, 10, white);
+        drawCentered(graphics, "§l5ifthNN v0.5.1 §r§7— Pure NN BedWars AI (MC 26.3 / 1.8 PvP)", cx, 10, white);
 
         if (activeTab == 0) {
             drawCentered(graphics, "§7Zero-Config Auto-Recorder  |  F6 = Highlight 8s  |  F7 = Scrap 3s / 10s", cx, 50, cyan);

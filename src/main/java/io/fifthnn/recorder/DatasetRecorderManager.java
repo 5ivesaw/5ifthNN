@@ -143,7 +143,7 @@ public final class DatasetRecorderManager {
         Path outFile = config.getRecordingsDir().resolve(filename);
 
         Map<String, Object> header = new LinkedHashMap<>();
-        header.put("modVersion", "0.5.0");
+        header.put("modVersion", "0.5.1");
         header.put("mcVersion", "26.3");
         header.put("schemaVersion", FifthNNSchema.SCHEMA_VERSION);
         header.put("recordingMode", mode.name());

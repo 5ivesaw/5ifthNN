@@ -100,7 +100,7 @@ public final class FifthNNClient implements ClientModInitializer {
             if (onnxEngine != null) onnxEngine.close();
         }, "5ifthNN-ShutdownHook"));
 
-        LOGGER.info("5ifthNN v0.5.0 initialized (MC 26.3) | ViaFabricPlus={} | ONNX={} | Recordings={}",
+        LOGGER.info("5ifthNN v0.5.1 initialized (MC 26.3) | ViaFabricPlus={} | ONNX={} | Recordings={}",
                 ViaFlickerGuard.isViaFabricPlusLoaded(), OnnxPolicyEngine.isRuntimeAvailable(), config.getRecordingsDir());
     }
 

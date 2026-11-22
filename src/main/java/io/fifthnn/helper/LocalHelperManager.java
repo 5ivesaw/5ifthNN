@@ -124,9 +124,9 @@ public final class LocalHelperManager {
 
         updateSlowMoSync(mc, stateTracker);
 
-        // Run CombatWeaveHelper FIRST so ClickCadenceHelper knows if a blockhit pulse is active this tick!
+        // Run CombatWeaveHelper FIRST so ClickCadenceHelper knows if a blockhit pulse/release is active!
         combatHelper.onClientTick(mc, config, stateTracker, helperTickClock);
-        clickHelper.onClientTick(mc, config, stateTracker, combatHelper.isBlockhitting(), helperTickClock);
+        clickHelper.onClientTick(mc, config, stateTracker, combatHelper.isBlockhitBusy(helperTickClock), helperTickClock);
     }
 
     public void onMeleeAttack(Entity target) {
