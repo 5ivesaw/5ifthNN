@@ -45,20 +45,13 @@ public final class FifthNNConfig {
     public boolean autoRequeueEnabled = false;
     public String autoRequeueCommand = "/play bedwars_eight_one";
 
-    // Local Training Helpers (ALL active gameplay helpers strictly gated by LocalHelperManager!)
+    // Focused Gameplay Helpers (ALL gated by LocalHelperManager — zero extra keybinds!)
     public java.util.List<String> permittedHelperServers = new java.util.ArrayList<>();
     public boolean enableLocalSlowMoSensSync = false;
-    public boolean enableSmartHotbarKeys = true;
-    public boolean enablePrepBreakKey = true;
-    public boolean enableBlockRefillSwap = true;
-    public boolean enablePostConsumeSwap = true;
     public boolean enableHoldToClickLmb = false;
     public boolean enableHoldToClickRmb = false;
     public boolean enableContextWTap = false;
     public boolean enableContextBlockhit = false;
-    public boolean enableQuickUtilityThrow = false;
-    public boolean enableShopQuickBuy = false;
-    public boolean enableBridgeUnsneak = false;
 
     // Phase 2: ONNX Inference & Human Physics Guardrails (calibrated to empirical human profile)
     public String selectedModelFile = "fifthnn_v1.onnx";

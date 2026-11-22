@@ -160,9 +160,9 @@ def classify_void_falls(seg: List[FrameRecord]) -> Dict[str, object]:
         if not is_void_event:
             continue
 
-        # Backtrack to find the tick where the player actually left solid ground (fall_start)
+        # Backtrack up to 120 ticks (6s) to find last solid ground even on high void-drop maps (Y=65 -> Y=-90)
         fall_start = i
-        for j in range(i, max(-1, i - 60), -1):
+        for j in range(i, max(-1, i - 120), -1):
             if seg[j].self_flags & SFLAG_ON_GROUND:
                 fall_start = j
                 break

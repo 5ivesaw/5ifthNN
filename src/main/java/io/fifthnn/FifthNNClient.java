@@ -74,20 +74,6 @@ public final class FifthNNClient implements ClientModInitializer {
     private static KeyMapping keyToggleAi;
     private static KeyMapping keyDaggerTakeover;
 
-    // Optional local-training helper keybinds (all UNBOUND by default — gated by LocalHelperManager!)
-    private static KeyMapping keyHelperSword;
-    private static KeyMapping keyHelperBlocks;
-    private static KeyMapping keyHelperGapple;
-    private static KeyMapping keyHelperPearl;
-    private static KeyMapping keyHelperFireball;
-    private static KeyMapping keyHelperPrepBreak;
-    private static KeyMapping keyHelperClutch;
-    private static KeyMapping keyHelperWTap;
-    private static KeyMapping keyHelperBlockhit;
-    private static KeyMapping keyHelperQuickFireball;
-    private static KeyMapping keyHelperQuickPearl;
-    private static KeyMapping keyHelperQuickBuy;
-
     private int lastSelectedHotbar = -1;
     private boolean wasContainerOpen = false;
     private boolean autoDepScreenHandledThisSession = false;
@@ -114,7 +100,7 @@ public final class FifthNNClient implements ClientModInitializer {
             if (onnxEngine != null) onnxEngine.close();
         }, "5ifthNN-ShutdownHook"));
 
-        LOGGER.info("5ifthNN v0.4.1 initialized (MC 26.3) | ViaFabricPlus={} | ONNX={} | Recordings={}",
+        LOGGER.info("5ifthNN v0.5.0 initialized (MC 26.3) | ViaFabricPlus={} | ONNX={} | Recordings={}",
                 ViaFlickerGuard.isViaFabricPlusLoaded(), OnnxPolicyEngine.isRuntimeAvailable(), config.getRecordingsDir());
     }
 
@@ -139,28 +125,6 @@ public final class FifthNNClient implements ClientModInitializer {
         ));
         keyDaggerTakeover = KeyMappingHelper.registerKeyMapping(new KeyMapping(
                 "key.fifthnn.dagger_takeover", InputConstants.Type.KEYBOARD, InputConstants.KEY_RALT, coreCat
-        ));
-
-        KeyMapping.Category helperCat = KeyMapping.Category.register(
-                Identifier.fromNamespaceAndPath(MOD_ID, "local_helpers")
-        );
-        keyHelperSword = registerUnbound("key.fifthnn.helper.sword", helperCat);
-        keyHelperBlocks = registerUnbound("key.fifthnn.helper.blocks", helperCat);
-        keyHelperGapple = registerUnbound("key.fifthnn.helper.gapple", helperCat);
-        keyHelperPearl = registerUnbound("key.fifthnn.helper.pearl", helperCat);
-        keyHelperFireball = registerUnbound("key.fifthnn.helper.fireball", helperCat);
-        keyHelperPrepBreak = registerUnbound("key.fifthnn.helper.prep_break", helperCat);
-        keyHelperClutch = registerUnbound("key.fifthnn.helper.clutch", helperCat);
-        keyHelperWTap = registerUnbound("key.fifthnn.helper.wtap", helperCat);
-        keyHelperBlockhit = registerUnbound("key.fifthnn.helper.blockhit", helperCat);
-        keyHelperQuickFireball = registerUnbound("key.fifthnn.helper.quick_fireball", helperCat);
-        keyHelperQuickPearl = registerUnbound("key.fifthnn.helper.quick_pearl", helperCat);
-        keyHelperQuickBuy = registerUnbound("key.fifthnn.helper.quick_buy", helperCat);
-    }
-
-    private static KeyMapping registerUnbound(String id, KeyMapping.Category category) {
-        return KeyMappingHelper.registerKeyMapping(new KeyMapping(
-                id, InputConstants.Type.KEYBOARD, InputConstants.UNKNOWN.getValue(), category
         ));
     }
 
@@ -240,31 +204,7 @@ public final class FifthNNClient implements ClientModInitializer {
             boolean takeoverHeld = aiActive && keyDaggerTakeover.isDown();
 
             FrameData frame = recorder.onClientTick(mc, aiActive, takeoverHeld);
-            helperManager.onClientTick(mc, stateTracker, frame, aiActive);
-
-            // Process optional local-helper keybinds ONLY when LocalHelperManager permits current server;
-            // drain buffered clicks when disallowed so public-server presses never fire later on localhost!
-            if (helperManager.areHelpersAllowed()) {
-                long tick = helperManager.getHelperTickClock();
-                var hb = helperManager.getHotbarHelper();
-                var cmb = helperManager.getCombatHelper();
-                var sb = helperManager.getShopBridgeHelper();
-
-                while (keyHelperSword.consumeClick()) hb.selectBestSword(mc, config, tick);
-                while (keyHelperBlocks.consumeClick()) hb.selectBestBlocks(mc, config, tick);
-                while (keyHelperGapple.consumeClick()) hb.selectItemCategory(mc, config, FifthNNSchema.ITEM_GOLDEN_APPLE, tick);
-                while (keyHelperPearl.consumeClick()) hb.selectItemCategory(mc, config, FifthNNSchema.ITEM_ENDER_PEARL, tick);
-                while (keyHelperFireball.consumeClick()) hb.selectItemCategory(mc, config, FifthNNSchema.ITEM_FIREBALL, tick);
-                while (keyHelperPrepBreak.consumeClick()) hb.prepBreakTarget(mc, config, stateTracker, tick);
-                while (keyHelperClutch.consumeClick()) hb.selectClutchItem(mc, config, tick);
-                while (keyHelperWTap.consumeClick()) cmb.triggerWTap(mc, config, stateTracker, tick);
-                while (keyHelperBlockhit.consumeClick()) cmb.triggerBlockhit(mc, config, stateTracker, tick);
-                while (keyHelperQuickFireball.consumeClick()) cmb.triggerQuickUtility(mc, config, FifthNNSchema.ITEM_FIREBALL, tick);
-                while (keyHelperQuickPearl.consumeClick()) cmb.triggerQuickUtility(mc, config, FifthNNSchema.ITEM_ENDER_PEARL, tick);
-                while (keyHelperQuickBuy.consumeClick()) sb.triggerQuickBuyRushKit(mc, config, tick);
-            } else {
-                drainHelperKeyClicks();
-            }
+            helperManager.onClientTick(mc, stateTracker, aiActive);
 
             if (aiActive) {
                 aiController.onClientTick(mc, frame, takeoverHeld);
@@ -274,7 +214,6 @@ public final class FifthNNClient implements ClientModInitializer {
         UseBlockCallback.EVENT.register((player, world, hand, hitResult) -> {
             if (world.isClientSide() && hitResult != null && player.getItemInHand(hand).getItem() instanceof BlockItem) {
                 stateTracker.markBlockPlaced(hitResult.getBlockPos().relative(hitResult.getDirection()));
-                helperManager.onBlockPlaced(helperManager.getHelperTickClock());
             }
             return InteractionResult.PASS;
         });
@@ -287,7 +226,7 @@ public final class FifthNNClient implements ClientModInitializer {
         AttackEntityCallback.EVENT.register((player, world, hand, entity, hitResult) -> {
             if (world.isClientSide()) {
                 stateTracker.markDamageDealt();
-                helperManager.onMeleeAttack(helperManager.getHelperTickClock());
+                helperManager.onMeleeAttack(entity);
             }
             return InteractionResult.PASS;
         });
@@ -314,21 +253,6 @@ public final class FifthNNClient implements ClientModInitializer {
             recorder.onClientShutdown();
             onnxEngine.close();
         });
-    }
-
-    private static void drainHelperKeyClicks() {
-        while (keyHelperSword.consumeClick()) {}
-        while (keyHelperBlocks.consumeClick()) {}
-        while (keyHelperGapple.consumeClick()) {}
-        while (keyHelperPearl.consumeClick()) {}
-        while (keyHelperFireball.consumeClick()) {}
-        while (keyHelperPrepBreak.consumeClick()) {}
-        while (keyHelperClutch.consumeClick()) {}
-        while (keyHelperWTap.consumeClick()) {}
-        while (keyHelperBlockhit.consumeClick()) {}
-        while (keyHelperQuickFireball.consumeClick()) {}
-        while (keyHelperQuickPearl.consumeClick()) {}
-        while (keyHelperQuickBuy.consumeClick()) {}
     }
 
     public static FifthNNConfig getConfig() { return config; }

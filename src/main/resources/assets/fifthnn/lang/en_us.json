@@ -5,18 +5,5 @@
   "key.fifthnn.toggle_record": "Manual Start / Stop Recording",
   "key.fifthnn.open_gui": "Open 5ifthNN Control Panel",
   "key.fifthnn.toggle_ai": "Toggle Phase 2 AI / Emergency Stop",
-  "key.fifthnn.dagger_takeover": "HG-DAgger Human Takeover (Hold)",
-  "key.category.fifthnn.local_helpers": "5ifthNN Local Training Helpers",
-  "key.fifthnn.helper.sword": "Smart Hotkey: Best Sword",
-  "key.fifthnn.helper.blocks": "Smart Hotkey: Best Blocks (Wool First)",
-  "key.fifthnn.helper.gapple": "Smart Hotkey: Golden Apple",
-  "key.fifthnn.helper.pearl": "Smart Hotkey: Ender Pearl",
-  "key.fifthnn.helper.fireball": "Smart Hotkey: Fireball",
-  "key.fifthnn.helper.prep_break": "Anticipatory Prep-Break Tool Swap",
-  "key.fifthnn.helper.clutch": "Falling Clutch-Item Quick-Swap",
-  "key.fifthnn.helper.wtap": "Context-Gated One-Tap W-Tap",
-  "key.fifthnn.helper.blockhit": "Context-Gated One-Tap Blockhit",
-  "key.fifthnn.helper.quick_fireball": "Quick Fireball Throw & Return",
-  "key.fifthnn.helper.quick_pearl": "Quick Pearl Throw & Return",
-  "key.fifthnn.helper.quick_buy": "Shop Quick-Buy Rush Kit Preset"
+  "key.fifthnn.dagger_takeover": "HG-DAgger Human Takeover (Hold)"
 }

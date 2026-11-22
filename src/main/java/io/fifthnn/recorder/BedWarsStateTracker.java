@@ -67,6 +67,7 @@ public final class BedWarsStateTracker {
     private boolean pearlLandingThisTick = false;
     private boolean lagSpikeThisTick = false;
     private boolean slowMoDrillMode = false;
+    private int consecutiveSpectatorTicks = 0;
     private long trackerTickClock = 0L;
     private long lastPearlThrowTick = -9999L;
     private long lastPearlSoundTick = -9999L;
@@ -94,6 +95,7 @@ public final class BedWarsStateTracker {
         hasHomeSpawn = false;
         hasPrevSelfPos = false;
         lastTickWallMs = 0L;
+        consecutiveSpectatorTicks = 0;
         pendingEventFlags = 0;
         pendingReward = 0.0f;
         pendingServerPositionPacket = false;
@@ -266,8 +268,21 @@ public final class BedWarsStateTracker {
             ownTeamId = teamColorToTeamId(player.getTeam().getColor());
         }
 
-        // Multi-signal Hub / Waiting-Box detection (learned directly from real Pika/Jartex/Mineberry logs!)
-        boolean looksLikeHubOrWaiting = isInHubOrWaitingLobby(player);
+        // Multi-signal Hub / Waiting-Box detection (NEVER treat temporary 5s BedWars respawn spectator as Lobby!)
+        boolean tempBedWarsRespawn = player.isSpectator()
+                && matchPhase == FifthNNSchema.MATCH_PHASE_IN_GAME
+                && sawBedwarsScoreboard
+                && (ownBedAlive == 1 || consecutiveSpectatorTicks < 140);
+        if (player.isSpectator() && matchPhase == FifthNNSchema.MATCH_PHASE_IN_GAME && sawBedwarsScoreboard) {
+            consecutiveSpectatorTicks++;
+            if (ownBedAlive == 0 && consecutiveSpectatorTicks >= 140) {
+                matchPhase = FifthNNSchema.MATCH_PHASE_SPECTATING;
+            }
+        } else {
+            consecutiveSpectatorTicks = 0;
+        }
+
+        boolean looksLikeHubOrWaiting = !tempBedWarsRespawn && isInHubOrWaitingLobby(player);
         if (looksLikeHubOrWaiting) {
             matchPhase = FifthNNSchema.MATCH_PHASE_LOBBY;
         } else if (matchPhase == FifthNNSchema.MATCH_PHASE_LOBBY && hasBedWarsGearOrBlocks(player)) {
@@ -380,6 +395,16 @@ public final class BedWarsStateTracker {
         prevHp = curHp;
 
         boolean deadNow = !player.isAlive() || curHp <= 0.0f;
+        boolean tempRespawn = player.isSpectator()
+                && matchPhase == FifthNNSchema.MATCH_PHASE_IN_GAME
+                && sawBedwarsScoreboard
+                && (ownBedAlive == 1 || consecutiveSpectatorTicks < 140);
+
+        if (deadNow || tempRespawn || player.isSpectator()) {
+            // Reset position baseline while dead/respawning so teleporting back to home spawn never triggers fake lagback!
+            hasPrevSelfPos = false;
+        }
+
         if (deadNow && !wasDead) {
             pendingEventFlags |= FifthNNSchema.EVT_DEATH;
             if (player.getY() < 15.0) {
@@ -388,10 +413,10 @@ public final class BedWarsStateTracker {
         }
         wasDead = deadNow;
 
-        if (player.isSpectator()) {
-            fr.matchPhase = deadNow ? FifthNNSchema.MATCH_PHASE_RESPAWNING : FifthNNSchema.MATCH_PHASE_SPECTATING;
-        } else if (deadNow) {
+        if (tempRespawn || deadNow) {
             fr.matchPhase = FifthNNSchema.MATCH_PHASE_RESPAWNING;
+        } else if (player.isSpectator()) {
+            fr.matchPhase = FifthNNSchema.MATCH_PHASE_SPECTATING;
         } else {
             fr.matchPhase = matchPhase;
         }
@@ -436,7 +461,8 @@ public final class BedWarsStateTracker {
         if (lobbyOrSpec) qFlags |= FifthNNSchema.QFLAG_LOBBY_OR_SPEC;
         if (teleportedThisTick) qFlags |= FifthNNSchema.QFLAG_TELEPORT_TICK;
 
-        boolean valid = !pauseOrChat && !deadNow && focused && !teleportedThisTick && (!autoTagLobby || !lobbyOrSpec);
+        boolean valid = !pauseOrChat && !deadNow && fr.matchPhase != FifthNNSchema.MATCH_PHASE_RESPAWNING
+                && focused && !teleportedThisTick && (!autoTagLobby || !lobbyOrSpec);
         if (valid) qFlags |= FifthNNSchema.QFLAG_VALID_IN_GAME;
         fr.qualityFlags = qFlags;
         lastFrameValidInGame = valid;

@@ -9,6 +9,7 @@ import io.fifthnn.schema.FifthNNSchema;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
+import net.minecraft.core.Direction;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.block.BedBlock;
@@ -22,52 +23,71 @@ import net.minecraft.world.phys.Vec3;
 import java.util.Random;
 
 /**
- * Step 3: Personalized Click-Cadence Hold-to-Click (LMB 5-State & RMB 4-State).
+ * Focused Click-Cadence Helpers (v0.5.0, zero extra keybinds, strictly gated by {@link LocalHelperManager}):
  *
- * Strictly gated by {@link LocalHelperManager}:
- *  - Shifted log-normal + lag-1 autocorrelated ICI sampler (65-180ms, <8% micro-bursts).
- *  - LMB: HOLD_MINE on blocks (3-tick hysteresis), COMBAT_TAP only on entity or <=3.5b +-30 deg LOS
- *    with 1-2 tick transition delay (no 0-tick causal leak!) and 200ms post-kill cutoff.
- *  - RMB: FAST_PLACE only when holding a placeable block & aiming at a non-interactable block
- *    seen for >= 1 tick (no 0-tick causal leak!).
+ *  1. LMB Combat Hold-to-Click (`lmb`):
+ *     - Shifted log-normal + lag-1 autocorrelated cadence (~9-12 CPS) ONLY when an enemy player
+ *       is directly under crosshair or within 3.5b +-30 deg LOS.
+ *     - Respects mining hysteresis (never resets bed-defense break progress), item use, and
+ *       auto-blockhit pulses (never attacks on the same tick RMB block is held -> AC safe!).
+ *
+ *  2. RMB Edge-Only Bridge & Clutch Assist (`rmb`):
+ *     - NEVER double-places single blocks and NEVER spams TOP faces (Direction.UP).
+ *     - Only fires 1 clean click per brand-new horizontal SIDE face (bridging edge or wall clutch)
+ *       after deliberate RMB hold (>=4t on ground, >=2t mid-air fall) + >=1t causal visibility.
  */
 public final class ClickCadenceHelper {
     private final Random rng = new Random();
 
-    private double prevIciMs = 95.0;
+    // LMB state
+    private double prevLmbIciMs = 92.0;
     private long nextLmbAllowedMs = 0L;
-    private long nextRmbAllowedMs = 0L;
-
     private long lastMiningActiveTick = -999L;
     private long combatEntryTick = -999L;
     private int combatEntryDelayTicks = 1;
     private long postKillCooldownUntilMs = 0L;
     private int lastTrackedEnemyId = -1;
 
-    private int consecutiveBlockFaceTicks = 0;
+    // RMB Edge-Only state (strictly 1 click per distinct new side face!)
+    private double prevRmbIciMs = 125.0;
+    private long nextRmbAllowedMs = 0L;
+    private int rmbHoldTicks = 0;
+    private long lastSeenTargetKey = Long.MIN_VALUE;
+    private int seenTargetTicks = 0;
+    private long lastClickedTargetKey = Long.MIN_VALUE;
 
-    public void reset(Minecraft mc) {
+    public void reset() {
         lastMiningActiveTick = -999L;
         combatEntryTick = -999L;
         postKillCooldownUntilMs = 0L;
         lastTrackedEnemyId = -1;
-        consecutiveBlockFaceTicks = 0;
+        rmbHoldTicks = 0;
+        lastSeenTargetKey = Long.MIN_VALUE;
+        seenTargetTicks = 0;
+        lastClickedTargetKey = Long.MIN_VALUE;
     }
 
-    public void onClientTick(Minecraft mc, FifthNNConfig cfg, BedWarsStateTracker st, long tick) {
+    public void onClientTick(
+            Minecraft mc,
+            FifthNNConfig cfg,
+            BedWarsStateTracker st,
+            boolean blockhitActive,
+            long tick
+    ) {
         LocalPlayer player = mc.player;
         if (player == null || mc.level == null || mc.options == null || mc.gui.screen() != null
                 || !player.isAlive() || player.isSpectator()) {
-            reset(mc);
+            reset();
             return;
         }
 
         long nowMs = System.currentTimeMillis();
 
-        // === LMB 5-STATE CONTEXT MACHINE ===
+        // === 1. LMB COMBAT HOLD-TO-CLICK ===
         if (cfg.enableHoldToClickLmb && mc.options.keyAttack.isDown()) {
-            if (player.isUsingItem()) {
-                combatEntryTick = -999L; // USE_ITEM_LOCKOUT (eating gapple / bowing)
+            if (player.isUsingItem() || blockhitActive) {
+                // Never emit attack click while eating/bowing/blocking (1.8 AC AutoBlock safety!)
+                combatEntryTick = -999L;
             } else {
                 float destroyProg = mc.gameMode != null
                         ? ((MultiPlayerGameModeAccessor) mc.gameMode).fifthnn$getDestroyProgress()
@@ -81,14 +101,15 @@ public final class ClickCadenceHelper {
                     lastTrackedEnemyId = targetEnemy.getId();
                     if (combatEntryTick < 0) {
                         combatEntryTick = tick;
-                        combatEntryDelayTicks = 1 + rng.nextInt(2); // 1-2 tick human reaction (no 0-tick leak!)
+                        combatEntryDelayTicks = 1 + rng.nextInt(2); // 1-2t human reaction (zero 0-tick leak)
                     }
-                    if (tick - combatEntryTick >= combatEntryDelayTicks && nowMs >= postKillCooldownUntilMs && nowMs >= nextLmbAllowedMs) {
+                    if (tick - combatEntryTick >= combatEntryDelayTicks
+                            && nowMs >= postKillCooldownUntilMs
+                            && nowMs >= nextLmbAllowedMs) {
                         triggerVanillaClick(mc.options.keyAttack);
-                        nextLmbAllowedMs = nowMs + sampleNextIciMs(95.0, 0.18, 65.0, 175.0);
+                        nextLmbAllowedMs = nowMs + sampleLmbIciMs();
                     }
                 } else {
-                    // Check if previous target just died -> 200ms post-kill cutoff
                     if (lastTrackedEnemyId >= 0) {
                         Entity prev = mc.level.getEntity(lastTrackedEnemyId);
                         if (prev == null || !prev.isAlive()) {
@@ -97,35 +118,59 @@ public final class ClickCadenceHelper {
                         lastTrackedEnemyId = -1;
                     }
                     combatEntryTick = -999L;
-                    // HOLD_MINE or IDLE_AIR: leave vanilla keyAttack.isDown() alone so mining never resets!
                 }
             }
         } else {
             combatEntryTick = -999L;
         }
 
-        // === RMB 4-STATE CONTEXT MACHINE ===
-        if (cfg.enableHoldToClickRmb && mc.options.keyUse.isDown() && !player.isUsingItem()) {
+        // === 2. RMB EDGE-ONLY BRIDGE & CLUTCH PLACEMENT ===
+        if (cfg.enableHoldToClickRmb && mc.options.keyUse.isDown() && !player.isUsingItem() && !blockhitActive) {
+            rmbHoldTicks++;
             int heldCat = WorldSnapshotCapture.classifyItem(player.getMainHandItem());
-            if (HotbarHelper.isPlaceableBlock(heldCat) && mc.hitResult instanceof BlockHitResult bhr) {
+            if (isPlaceableBlock(heldCat)
+                    && mc.hitResult instanceof BlockHitResult bhr
+                    && bhr.getType() == HitResult.Type.BLOCK) {
                 Block b = mc.level.getBlockState(bhr.getBlockPos()).getBlock();
                 boolean interactable = (b == Blocks.CHEST || b == Blocks.ENDER_CHEST || b == Blocks.TRAPPED_CHEST || b instanceof BedBlock)
                         && !player.isShiftKeyDown();
-                if (!interactable) {
-                    consecutiveBlockFaceTicks++;
-                    // Require >= 1 prior tick seeing block face (no 0-tick causal leak!)
-                    if (consecutiveBlockFaceTicks >= 2 && nowMs >= nextRmbAllowedMs) {
+
+                // ONLY assist on horizontal SIDE faces (bridging edge / wall clutch) — NEVER spam TOP faces!
+                boolean isSideFace = bhr.getDirection().getAxis() != Direction.Axis.Y;
+                if (!interactable && isSideFace) {
+                    long targetKey = (bhr.getBlockPos().asLong() << 3) | (bhr.getDirection().ordinal() & 0x7L);
+                    if (targetKey == lastSeenTargetKey) {
+                        seenTargetTicks++;
+                    } else {
+                        lastSeenTargetKey = targetKey;
+                        seenTargetTicks = 1;
+                    }
+
+                    boolean midAirClutch = !player.onGround() && player.getDeltaMovement().y < -0.08;
+                    int minHoldTicks = midAirClutch ? 2 : 4; // Normal single-block clicks (<200ms) NEVER double-place!
+
+                    // Strictly 1 click per distinct (blockPos, sideFace) + >=1 prior tick visibility!
+                    if (rmbHoldTicks >= minHoldTicks
+                            && seenTargetTicks >= 2
+                            && targetKey != lastClickedTargetKey
+                            && nowMs >= nextRmbAllowedMs) {
                         triggerVanillaClick(mc.options.keyUse);
-                        nextRmbAllowedMs = nowMs + sampleNextIciMs(88.0, 0.14, 70.0, 120.0);
+                        lastClickedTargetKey = targetKey;
+                        nextRmbAllowedMs = nowMs + sampleRmbIciMs(midAirClutch);
                     }
                 } else {
-                    consecutiveBlockFaceTicks = 0;
+                    lastSeenTargetKey = Long.MIN_VALUE;
+                    seenTargetTicks = 0;
                 }
             } else {
-                consecutiveBlockFaceTicks = 0;
+                lastSeenTargetKey = Long.MIN_VALUE;
+                seenTargetTicks = 0;
             }
         } else {
-            consecutiveBlockFaceTicks = 0;
+            rmbHoldTicks = 0;
+            lastSeenTargetKey = Long.MIN_VALUE;
+            seenTargetTicks = 0;
+            lastClickedTargetKey = Long.MIN_VALUE;
         }
     }
 
@@ -133,14 +178,12 @@ public final class ClickCadenceHelper {
         int ownTeam = st != null ? st.getOwnTeamId() : 0;
         var cache = st != null ? st.getLandmarkCache() : null;
 
-        // 1. Direct crosshair entity hit
         if (mc.hitResult instanceof EntityHitResult ehr && ehr.getEntity() instanceof Player p) {
             if (isValidEnemy(self, p, ownTeam, cache)) return p;
         }
 
-        // 2. Tightened <= 3.5b, +-30 deg cone WITH strict line-of-sight (never clicks through walls!)
         if (mc.hitResult instanceof BlockHitResult && (tick - lastMiningActiveTick <= 3L)) {
-            return null; // Mining hysteresis: don't jitter off mining a bed defense
+            return null;
         }
         Vec3 look = self.getViewVector(1.0f).normalize();
         Vec3 eye = self.getEyePosition(1.0f);
@@ -153,7 +196,7 @@ public final class ClickCadenceHelper {
             double dSq = self.distanceToSqr(p);
             if (dSq > bestDistSq) continue;
             Vec3 to = p.getEyePosition(1.0f).subtract(eye).normalize();
-            if (look.dot(to) < 0.866) continue; // cos(30 deg) = 0.866
+            if (look.dot(to) < 0.866) continue; // +-30 deg cone
             if (!self.hasLineOfSight(p)) continue;
             bestDistSq = dSq;
             best = p;
@@ -161,7 +204,7 @@ public final class ClickCadenceHelper {
         return best;
     }
 
-    private static boolean isValidEnemy(LocalPlayer self, Player p, int ownTeam, io.fifthnn.recorder.ArenaLandmarkCache cache) {
+    static boolean isValidEnemy(LocalPlayer self, Player p, int ownTeam, io.fifthnn.recorder.ArenaLandmarkCache cache) {
         if (!p.isAlive() || p.isSpectator()) return false;
         if (cache != null && cache.isNearShopNpcHologram(p.getX(), p.getY(), p.getZ())) return false;
         int otherTeam = BedWarsStateTracker.inferTeamIdFromArmor(p);
@@ -170,15 +213,32 @@ public final class ClickCadenceHelper {
         return true;
     }
 
-    private long sampleNextIciMs(double medianMs, double sigma, double minMs, double maxMs) {
-        // Rare natural human double-click micro-burst (<8%)
+    private static boolean isPlaceableBlock(int cat) {
+        return cat == FifthNNSchema.ITEM_WOOL || cat == FifthNNSchema.ITEM_TERRACOTTA
+                || cat == FifthNNSchema.ITEM_WOOD_PLANKS || cat == FifthNNSchema.ITEM_ENDSTONE
+                || cat == FifthNNSchema.ITEM_BLASTPROOF_GLASS || cat == FifthNNSchema.ITEM_OBSIDIAN
+                || cat == FifthNNSchema.ITEM_LADDER;
+    }
+
+    private long sampleLmbIciMs() {
         if (rng.nextDouble() < 0.07) {
             return 48L + rng.nextInt(18);
         }
-        double logSample = medianMs * Math.exp(rng.nextGaussian() * sigma);
-        double blended = 0.35 * prevIciMs + 0.65 * logSample;
-        double clamped = Math.max(minMs, Math.min(maxMs, blended));
-        prevIciMs = clamped;
+        double logSample = 92.0 * Math.exp(rng.nextGaussian() * 0.18);
+        double blended = 0.35 * prevLmbIciMs + 0.65 * logSample;
+        double clamped = Math.max(65.0, Math.min(170.0, blended));
+        prevLmbIciMs = clamped;
+        return Math.round(clamped);
+    }
+
+    private long sampleRmbIciMs(boolean clutch) {
+        double median = clutch ? 88.0 : 128.0;
+        double lo = clutch ? 72.0 : 108.0;
+        double hi = clutch ? 120.0 : 165.0;
+        double logSample = median * Math.exp(rng.nextGaussian() * 0.14);
+        double blended = 0.35 * prevRmbIciMs + 0.65 * logSample;
+        double clamped = Math.max(lo, Math.min(hi, blended));
+        prevRmbIciMs = clamped;
         return Math.round(clamped);
     }
 

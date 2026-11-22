@@ -8,41 +8,44 @@ import io.fifthnn.schema.FifthNNSchema;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.world.entity.Entity;
-import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.phys.Vec3;
 
 import java.util.Random;
 
 /**
- * Step 4: Context-Gated 1.8 Combat & Utility Weaves (strictly manual trigger, zero 0-tick leaks).
+ * Automatic Post-Hit 1.8 PvP Sprint-Reset (W-Tap) & Close-Trade Sword Blockhit (v0.5.0).
  *
- * Includes:
- *  - Context-Gated One-Tap W-Tap (only fires in combat, suppresses W for 2-3t, restores physical key!)
- *  - Context-Gated One-Tap Blockhit (sword + combat context, randomized 1-3t pulse)
- *  - Quick Utility Throw-and-Return (strict multi-tick: t=swap -> t+1=RMB -> t+2..4=return)
+ * ZERO extra keybinds required — works seamlessly from your normal melee attacks!
+ *  - Strictly 1-2 tick post-hit reaction delay (zero 0-tick causal leak for 5ifthNN!).
+ *  - Cooldowns matched to 1.8's 10-tick damage invulnerability window so you W-tap / blockhit
+ *    once per real hit rather than spamming on every swing.
+ *  - Restores exact physical W / RMB hardware state via SDL3 when each pulse finishes.
  */
 public final class CombatWeaveHelper {
     private final Random rng = new Random();
 
-    private long lastAttackTick = -999L;
+    // Pending post-hit triggers (strictly t+1 or t+2 after AttackEntityCallback!)
+    private long pendingHitTick = -1L;
+    private int pendingHitTargetId = -1;
+    private long scheduledWTapTick = -1L;
+    private long scheduledBlockhitTick = -1L;
 
-    // W-Tap state
+    // Active pulse states
     private int wTapSuppressRemaining = 0;
-    private long lastWTapTick = -999L;
+    private long nextWTapAllowedTick = -999L;
 
-    // Blockhit state
     private int blockhitTicksRemaining = 0;
-    private long lastBlockhitTick = -999L;
+    private long nextBlockhitAllowedTick = -999L;
 
-    // Quick Utility Throw-and-Return state machine
-    private int utilStage = 0; // 0=idle, 1=wait_rmb, 2=wait_return
-    private int utilTargetSlot = -1;
-    private int utilReturnSlot = -1;
-    private long utilNextActionTick = -1L;
+    public boolean isBlockhitting() {
+        return blockhitTicksRemaining > 0;
+    }
 
-    public void onMeleeAttack(long tick) {
-        lastAttackTick = tick;
+    public void onMeleeAttack(long tick, Entity target) {
+        if (!(target instanceof Player)) return;
+        pendingHitTick = tick;
+        pendingHitTargetId = target.getId();
     }
 
     public void reset(Minecraft mc) {
@@ -54,68 +57,87 @@ public final class CombatWeaveHelper {
                 mc.options.keyUse.setDown(LocalHelperManager.isPhysicallyHeld(mc, mc.options.keyUse));
             }
         }
+        pendingHitTick = -1L;
+        pendingHitTargetId = -1;
+        scheduledWTapTick = -1L;
+        scheduledBlockhitTick = -1L;
         wTapSuppressRemaining = 0;
         blockhitTicksRemaining = 0;
-        utilStage = 0;
-        utilTargetSlot = -1;
-        utilReturnSlot = -1;
-    }
-
-    public void triggerWTap(Minecraft mc, FifthNNConfig cfg, BedWarsStateTracker st, long tick) {
-        if (!cfg.enableContextWTap || mc == null || mc.player == null || mc.level == null || mc.gui.screen() != null) return;
-        LocalPlayer p = mc.player;
-        if (!mc.options.keyUp.isDown() || mc.options.keyShift.isDown()) return;
-        if (tick - lastWTapTick < 8L) return;
-
-        // Void-jump safety: never cut W mid-air over a drop
-        if (!p.onGround()) return;
-
-        // Combat context gate: enemy within 5.0b in +-45 deg cone AND (recent hit or <= 3.8b)
-        Player enemy = findEnemyInFront(mc, p, st, 5.0, 0.707);
-        if (enemy == null) return;
-        double dist = p.distanceTo(enemy);
-        if ((tick - lastAttackTick > 5L) && dist > 3.8) return;
-
-        wTapSuppressRemaining = 2 + rng.nextInt(2); // 2-3 ticks (100-150ms)
-        lastWTapTick = tick;
-        mc.options.keyUp.setDown(false);
-    }
-
-    public void triggerBlockhit(Minecraft mc, FifthNNConfig cfg, BedWarsStateTracker st, long tick) {
-        if (!cfg.enableContextBlockhit || mc == null || mc.player == null || mc.level == null || mc.gui.screen() != null) return;
-        LocalPlayer p = mc.player;
-        if (p.isUsingItem() || tick - lastBlockhitTick < 8L) return;
-        int heldCat = WorldSnapshotCapture.classifyItem(p.getMainHandItem());
-        if (heldCat < FifthNNSchema.ITEM_WOOD_SWORD || heldCat > FifthNNSchema.ITEM_DIAMOND_SWORD) return;
-        if (tick - lastAttackTick > 4L) return;
-        if (findEnemyInFront(mc, p, st, 4.2, 0.707) == null) return;
-
-        blockhitTicksRemaining = 1 + rng.nextInt(3); // 1-3 ticks (50-150ms)
-        lastBlockhitTick = tick;
-        mc.options.keyUse.setDown(true);
-        KeyMappingAccessor acc = (KeyMappingAccessor) mc.options.keyUse;
-        acc.fifthnn$setClickCount(acc.fifthnn$getClickCount() + 1);
-    }
-
-    /** Strict multi-tick throw: tick t=swap -> t+1=RMB -> t+2..4=return (aborts if GUI opens). */
-    public void triggerQuickUtility(Minecraft mc, FifthNNConfig cfg, int itemCat, long tick) {
-        if (!cfg.enableQuickUtilityThrow || utilStage != 0) return;
-        if (mc == null || mc.player == null || mc.gui.screen() != null) return;
-        Inventory inv = mc.player.getInventory();
-        int slot = HotbarHelper.findSlotByCat(inv, itemCat);
-        if (slot < 0) return;
-
-        utilReturnSlot = inv.getSelectedSlot();
-        utilTargetSlot = slot;
-        HotbarHelper.selectSlotSafe(inv, slot);
-        utilStage = 1;
-        utilNextActionTick = tick + 1L; // strictly t+1 before RMB click!
     }
 
     public void onClientTick(Minecraft mc, FifthNNConfig cfg, BedWarsStateTracker st, long tick) {
-        if (mc == null || mc.player == null || mc.options == null) return;
+        if (mc == null || mc.player == null || mc.level == null || mc.options == null) return;
+        LocalPlayer p = mc.player;
 
-        // Maintain W-Tap suppression, then restore exact physical W key state (never leaves W stuck false!)
+        if (mc.gui.screen() != null || !p.isAlive() || p.isSpectator()) {
+            reset(mc);
+            return;
+        }
+
+        // 1. Evaluate a freshly landed melee hit -> schedule 1-2t human reaction (zero 0-tick leak!)
+        if (pendingHitTick >= 0 && tick >= pendingHitTick) {
+            int tid = pendingHitTargetId;
+            pendingHitTick = -1L;
+            pendingHitTargetId = -1;
+
+            Entity ent = mc.level.getEntity(tid);
+            if (ent instanceof Player enemy && ClickCadenceHelper.isValidEnemy(p, enemy, st != null ? st.getOwnTeamId() : 0, st != null ? st.getLandmarkCache() : null)) {
+                double dist = p.distanceTo(enemy);
+
+                // Automatic 1.8 W-Tap: on ground, moving forward with W, not sneaking, melee range
+                if (cfg.enableContextWTap
+                        && scheduledWTapTick < 0
+                        && wTapSuppressRemaining == 0
+                        && tick >= nextWTapAllowedTick
+                        && p.onGround()
+                        && mc.options.keyUp.isDown()
+                        && !mc.options.keyShift.isDown()
+                        && dist <= 3.9) {
+                    scheduledWTapTick = tick + 1L + rng.nextInt(2); // t+1 or t+2
+                }
+
+                // Automatic 1.8 Close-Trade Blockhit: holding Sword, close trade (<=3.3b), enemy facing/trading
+                int heldCat = WorldSnapshotCapture.classifyItem(p.getMainHandItem());
+                boolean holdingSword = heldCat >= FifthNNSchema.ITEM_WOOD_SWORD && heldCat <= FifthNNSchema.ITEM_DIAMOND_SWORD;
+                if (cfg.enableContextBlockhit
+                        && holdingSword
+                        && !p.isUsingItem()
+                        && scheduledBlockhitTick < 0
+                        && blockhitTicksRemaining == 0
+                        && tick >= nextBlockhitAllowedTick
+                        && dist <= 3.3
+                        && isEnemyTrading(p, enemy)
+                        && rng.nextDouble() < 0.78) { // natural ~78% close-trade cadence
+                    scheduledBlockhitTick = tick + 1L + rng.nextInt(2); // t+1 or t+2
+                }
+            }
+        }
+
+        // 2. Fire scheduled W-Tap pulse (2-3 ticks = 100-150ms clean sprint reset)
+        if (scheduledWTapTick >= 0 && tick >= scheduledWTapTick) {
+            scheduledWTapTick = -1L;
+            if (cfg.enableContextWTap && p.onGround() && mc.options.keyUp.isDown() && !mc.options.keyShift.isDown()) {
+                wTapSuppressRemaining = 2 + rng.nextInt(2); // 2-3 ticks
+                nextWTapAllowedTick = tick + 9L + rng.nextInt(4); // 9-12t (matches 1.8 10t hurtTime!)
+                mc.options.keyUp.setDown(false);
+            }
+        }
+
+        // 3. Fire scheduled Blockhit pulse (1-2 ticks = 50-100ms clean sword block)
+        if (scheduledBlockhitTick >= 0 && tick >= scheduledBlockhitTick) {
+            scheduledBlockhitTick = -1L;
+            int heldCat = WorldSnapshotCapture.classifyItem(p.getMainHandItem());
+            boolean holdingSword = heldCat >= FifthNNSchema.ITEM_WOOD_SWORD && heldCat <= FifthNNSchema.ITEM_DIAMOND_SWORD;
+            if (cfg.enableContextBlockhit && holdingSword && !p.isUsingItem()) {
+                blockhitTicksRemaining = 1 + rng.nextInt(2); // 1-2 ticks (crisp 1.8 blockhit, minimal slowdown!)
+                nextBlockhitAllowedTick = tick + 10L + rng.nextInt(5); // 10-14t
+                mc.options.keyUse.setDown(true);
+                KeyMappingAccessor acc = (KeyMappingAccessor) mc.options.keyUse;
+                acc.fifthnn$setClickCount(acc.fifthnn$getClickCount() + 1);
+            }
+        }
+
+        // 4. Maintain W-Tap suppression, then restore exact physical W key state
         if (wTapSuppressRemaining > 0) {
             wTapSuppressRemaining--;
             if (wTapSuppressRemaining > 0) {
@@ -125,52 +147,20 @@ public final class CombatWeaveHelper {
             }
         }
 
-        // Maintain Blockhit pulse, then restore exact physical RMB state
+        // 5. Maintain Blockhit pulse, then restore exact physical RMB state
         if (blockhitTicksRemaining > 0) {
             blockhitTicksRemaining--;
             if (blockhitTicksRemaining == 0) {
                 mc.options.keyUse.setDown(LocalHelperManager.isPhysicallyHeld(mc, mc.options.keyUse));
             }
         }
-
-        // Advance Quick Utility Throw-and-Return state machine
-        if (utilStage > 0) {
-            if (mc.gui.screen() != null || mc.player.getInventory().getSelectedSlot() != utilTargetSlot) {
-                utilStage = 0; // Abort cleanly if GUI opened (e.g. clicked Shop NPC) or player swapped!
-                return;
-            }
-            if (tick >= utilNextActionTick) {
-                if (utilStage == 1) {
-                    KeyMappingAccessor acc = (KeyMappingAccessor) mc.options.keyUse;
-                    acc.fifthnn$setClickCount(acc.fifthnn$getClickCount() + 1);
-                    utilStage = 2;
-                    utilNextActionTick = tick + 1L + rng.nextInt(3); // t+2..4 return!
-                } else if (utilStage == 2) {
-                    HotbarHelper.selectSlotSafe(mc.player.getInventory(), utilReturnSlot);
-                    utilStage = 0;
-                }
-            }
-        }
     }
 
-    private static Player findEnemyInFront(Minecraft mc, LocalPlayer self, BedWarsStateTracker st, double maxDist, double minDot) {
-        int ownTeam = st != null ? st.getOwnTeamId() : 0;
-        var cache = st != null ? st.getLandmarkCache() : null;
-        Vec3 look = self.getViewVector(1.0f).normalize();
-        Vec3 eye = self.getEyePosition(1.0f);
-        double maxSq = maxDist * maxDist;
-
-        for (Entity ent : mc.level.entitiesForRendering()) {
-            if (!(ent instanceof Player p) || p == self || !p.isAlive() || p.isSpectator()) continue;
-            if (cache != null && cache.isNearShopNpcHologram(p.getX(), p.getY(), p.getZ())) continue;
-            int otherTeam = BedWarsStateTracker.inferTeamIdFromArmor(p);
-            if (ownTeam > 0 && otherTeam > 0 && ownTeam == otherTeam) continue;
-            if (self.distanceToSqr(p) > maxSq) continue;
-            Vec3 to = p.getEyePosition(1.0f).subtract(eye).normalize();
-            if (look.dot(to) >= minDot && self.hasLineOfSight(p)) {
-                return p;
-            }
-        }
-        return null;
+    /** True if the enemy is actively facing us (close melee trade) rather than running away. */
+    private static boolean isEnemyTrading(LocalPlayer self, Player enemy) {
+        if (self.hurtTime > 0) return true; // actively taking hits -> trade!
+        Vec3 enemyLook = enemy.getViewVector(1.0f).normalize();
+        Vec3 enemyToSelf = self.getEyePosition(1.0f).subtract(enemy.getEyePosition(1.0f)).normalize();
+        return enemyLook.dot(enemyToSelf) > 0.35; // enemy facing within ~70 deg of us
     }
 }

@@ -145,14 +145,12 @@ public final class FifthNNCommands {
                             boolean allowed = FifthNNClient.getHelperManager().areHelpersAllowed();
                             FifthNNConfig cfg = FifthNNClient.getConfig();
                             String status = String.format(
-                                    "%s\n§7  hotbar=%s prep=%s refill=%s consume=%s lmb=%s rmb=%s wtap=%s blockhit=%s util=%s quickbuy=%s unsneak=%s",
+                                    "%s\n§7  lmb=%s | rmb(edge-only)=%s | wtap(auto)=%s | blockhit(auto)=%s",
                                     allowed
                                             ? "§a[5ifthNN Helpers] PERMITTED (Local/Whitelisted Server)"
                                             : "§c[5ifthNN Helpers] LOCKED OFF (Public / Non-Permitted Server)",
-                                    cfg.enableSmartHotbarKeys, cfg.enablePrepBreakKey, cfg.enableBlockRefillSwap,
-                                    cfg.enablePostConsumeSwap, cfg.enableHoldToClickLmb, cfg.enableHoldToClickRmb,
-                                    cfg.enableContextWTap, cfg.enableContextBlockhit, cfg.enableQuickUtilityThrow,
-                                    cfg.enableShopQuickBuy, cfg.enableBridgeUnsneak
+                                    cfg.enableHoldToClickLmb, cfg.enableHoldToClickRmb,
+                                    cfg.enableContextWTap, cfg.enableContextBlockhit
                             );
                             ctx.getSource().sendFeedback(Component.literal(status));
                             return 1;
@@ -189,22 +187,15 @@ public final class FifthNNCommands {
                                             String mod = StringArgumentType.getString(ctx, "module").toLowerCase(java.util.Locale.ROOT);
                                             FifthNNConfig cfg = FifthNNClient.getConfig();
                                             Boolean next = switch (mod) {
-                                                case "hotbar" -> cfg.enableSmartHotbarKeys = !cfg.enableSmartHotbarKeys;
-                                                case "prep" -> cfg.enablePrepBreakKey = !cfg.enablePrepBreakKey;
-                                                case "refill" -> cfg.enableBlockRefillSwap = !cfg.enableBlockRefillSwap;
-                                                case "consume" -> cfg.enablePostConsumeSwap = !cfg.enablePostConsumeSwap;
                                                 case "lmb" -> cfg.enableHoldToClickLmb = !cfg.enableHoldToClickLmb;
                                                 case "rmb" -> cfg.enableHoldToClickRmb = !cfg.enableHoldToClickRmb;
                                                 case "wtap" -> cfg.enableContextWTap = !cfg.enableContextWTap;
                                                 case "blockhit" -> cfg.enableContextBlockhit = !cfg.enableContextBlockhit;
-                                                case "util" -> cfg.enableQuickUtilityThrow = !cfg.enableQuickUtilityThrow;
-                                                case "quickbuy" -> cfg.enableShopQuickBuy = !cfg.enableShopQuickBuy;
-                                                case "unsneak" -> cfg.enableBridgeUnsneak = !cfg.enableBridgeUnsneak;
                                                 default -> null;
                                             };
                                             if (next == null) {
                                                 ctx.getSource().sendFeedback(Component.literal(
-                                                        "§e[5ifthNN Helpers] Unknown module. Use: hotbar|prep|refill|consume|lmb|rmb|wtap|blockhit|util|quickbuy|unsneak"));
+                                                        "§e[5ifthNN Helpers] Unknown module. Use: lmb|rmb|wtap|blockhit"));
                                                 return 0;
                                             }
                                             cfg.save();
