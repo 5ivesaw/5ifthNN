@@ -13,9 +13,11 @@ import net.minecraft.resources.Identifier;
 import net.minecraft.util.ARGB;
 
 /**
- * Compact, non-intrusive HUD status badge for Minecraft 26.3 (HudElementRegistry + GuiGraphicsExtractor).
- * Shows real-time recording state (IN-GAME vs LOBBY/PAUSE filter), episode number, live tracked
- * arena landmarks (Beds / Gens), valid frame count, file size, and Phase 2 ONNX latency.
+ * Zero-leakage HUD status overlay for Minecraft 26.3 (v0.3.0):
+ *  - Minimal mode (default): unobtrusive corner traffic-light dot (Green=clean, Yellow=paused/quarantined,
+ *    Red=flicker/ping anomaly; hidden in STANDBY) + 2.5s F6/F7/auto-record toast.
+ *  - Full mode (toggleable in F8 or /5nn hud full): adds RB/FLK protocol-health counters,
+ *    episode/landmark counts, and cumulative dataset skill-diet totals.
  */
 public final class FifthNNHudOverlay {
     public static final Identifier HUD_ID = Identifier.fromNamespaceAndPath(FifthNNClient.MOD_ID, "hud_status");
@@ -34,7 +36,9 @@ public final class FifthNNHudOverlay {
         AiController ai = FifthNNClient.getAiController();
         boolean isRec = rec != null && rec.isRecording();
         boolean isAi = ai != null && ai.isAiEnabled();
-        if (!isRec && !isAi) {
+        String toast = rec != null ? rec.getActiveToast() : null;
+
+        if (!isRec && !isAi && toast == null) {
             return;
         }
 
@@ -42,24 +46,55 @@ public final class FifthNNHudOverlay {
         int y = 8;
 
         if (isRec) {
-            long sec = rec.getElapsedSeconds();
             boolean validNow = st != null && st.isLastFrameValidInGame();
-            String phaseBadge = validNow ? "§aIN-GAME" : "§eLOBBY/SKIP";
-            int ep = st != null ? st.getEpisodeId() : 1;
+            boolean quarantined = rec.isQuarantinedNow();
+            int rb = rec.getSessionLagbacks();
+            int flk = rec.getSessionFlickers();
             int beds = st != null ? st.getLandmarkCache().getTrackedBedCount() : 0;
             int gens = st != null ? st.getLandmarkCache().getTrackedGenCount() : 0;
 
-            String line = String.format(
-                    "§c● REC §f[%s] %s §7%02d:%02d | Ep#%d | %d valid (%.1fMB) | B:%d G:%d",
-                    cfg.getRecordingModeEnum().name(),
-                    phaseBadge,
-                    sec / 60, sec % 60,
-                    ep,
-                    rec.getValidFramesWritten(),
-                    rec.getBytesWrittenEst() / (1024.0 * 1024.0),
-                    beds, gens
-            );
-            drawBadge(graphics, mc, line, x, y);
+            String dot;
+            if (flk >= 5 || rb >= 5) {
+                dot = "§c●"; // Red: protocol/lag anomaly
+            } else if (!validNow || quarantined) {
+                dot = "§e●"; // Yellow: lobby/pause/quarantine
+            } else {
+                dot = "§a●"; // Green: clean recording
+            }
+
+            if (cfg.minimalHudMode) {
+                String compact = dot + " §75nn" + (flk > 0 || rb > 0 ? String.format(" §6RB:%d FLK:%d", rb, flk) : "");
+                drawBadge(graphics, mc, compact, x, y);
+                y += 14;
+            } else {
+                long sec = rec.getElapsedSeconds();
+                String phaseBadge = quarantined ? "§6QUARANTINE" : (validNow ? "§aIN-GAME" : "§eSKIP");
+                int ep = st != null ? st.getEpisodeId() : 1;
+                String line = String.format(
+                        "%s REC §f[%s] %s §7%02d:%02d | Ep#%d | %.1fMB | B:%d G:%d | §6RB:%d FLK:%d",
+                        dot,
+                        cfg.getRecordingModeEnum().name(),
+                        phaseBadge,
+                        sec / 60, sec % 60,
+                        ep,
+                        rec.getBytesWrittenEst() / (1024.0 * 1024.0),
+                        beds, gens, rb, flk
+                );
+                drawBadge(graphics, mc, line, x, y);
+                y += 14;
+
+                String diet = String.format(
+                        "§7Dataset Total: §f%.1fm §7(%d matches | Shop:%d | Blocks:%d)",
+                        rec.getTotalSavedMinutes(), rec.getTotalSavedMatches(),
+                        rec.getTotalSavedShopClicks(), rec.getTotalSavedBlocks()
+                );
+                drawBadge(graphics, mc, diet, x, y);
+                y += 14;
+            }
+        }
+
+        if (toast != null) {
+            drawBadge(graphics, mc, "§f" + toast, x, y);
             y += 14;
         }
 

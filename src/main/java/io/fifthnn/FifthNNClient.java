@@ -11,7 +11,9 @@ import io.fifthnn.recorder.BedWarsStateTracker;
 import io.fifthnn.recorder.DatasetRecorderManager;
 import io.fifthnn.recorder.FrameData;
 import io.fifthnn.recorder.InputTracker;
+import io.fifthnn.recorder.ViaFlickerGuard;
 import io.fifthnn.ui.FifthNNControlScreen;
+import io.fifthnn.ui.FifthNNDependencyScreen;
 import io.fifthnn.ui.FifthNNHudOverlay;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
@@ -22,23 +24,29 @@ import net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry;
 import net.fabricmc.fabric.api.client.rendering.v1.hud.VanillaHudElements;
+import net.fabricmc.fabric.api.client.screen.v1.ScreenEvents;
+import net.fabricmc.fabric.api.client.screen.v1.Screens;
 import net.fabricmc.fabric.api.event.player.AttackBlockCallback;
 import net.fabricmc.fabric.api.event.player.AttackEntityCallback;
 import net.fabricmc.fabric.api.event.player.UseBlockCallback;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.components.Button;
+import net.minecraft.client.gui.screens.TitleScreen;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
+import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
 import net.minecraft.world.InteractionResult;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * 5ifthNN Entrypoint (Minecraft Java 26.3 / Fabric).
+ * 5ifthNN Entrypoint (Minecraft Java 26.3 / Fabric, v0.3.0, GPL-3.0).
  *
- * Phase 1: Lossless 1:1 structured dataset recorder with hotkeys, GUI, commands & failsafes.
- * Phase 2: Embedded lightweight ONNX Runtime inference engine + HG-DAgger live takeover.
+ * Phase 1: Zero-config 1:1 BedWars auto-recorder with 40-tick lagback/flicker ring buffer,
+ *          F6/F7 tagging, `/5nn share`, and built-in ViaVersion flicker guard.
+ * Phase 2: Optional ONNX Runtime inference engine + HG-DAgger live takeover.
  */
 public final class FifthNNClient implements ClientModInitializer {
     public static final String MOD_ID = "fifthnn";
@@ -52,6 +60,8 @@ public final class FifthNNClient implements ClientModInitializer {
     private static HumanActionExecutor actionExecutor;
     private static AiController aiController;
 
+    private static KeyMapping keyHighlight;
+    private static KeyMapping keyScrap;
     private static KeyMapping keyToggleRecord;
     private static KeyMapping keyOpenGui;
     private static KeyMapping keyToggleAi;
@@ -59,6 +69,7 @@ public final class FifthNNClient implements ClientModInitializer {
 
     private int lastSelectedHotbar = -1;
     private boolean wasContainerOpen = false;
+    private boolean autoDepScreenHandledThisSession = false;
 
     @Override
     public void onInitializeClient() {
@@ -73,27 +84,33 @@ public final class FifthNNClient implements ClientModInitializer {
         registerKeyMappings();
         registerHud();
         registerCommands();
+        registerTitleScreenPrompt();
         registerEvents();
 
-        // JVM shutdown failsafe: guarantees GZIP stream flush even on abrupt exit
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             if (recorder != null) recorder.onClientShutdown();
             if (onnxEngine != null) onnxEngine.close();
         }, "5ifthNN-ShutdownHook"));
 
-        LOGGER.info("5ifthNN initialized (MC 26.3) | Recordings: {} | Models: {}",
-                config.getRecordingsDir(), config.getModelsDir());
+        LOGGER.info("5ifthNN v0.3.0 initialized (MC 26.3) | ViaFabricPlus={} | ONNX={} | Recordings={}",
+                ViaFlickerGuard.isViaFabricPlusLoaded(), OnnxPolicyEngine.isRuntimeAvailable(), config.getRecordingsDir());
     }
 
     private void registerKeyMappings() {
         KeyMapping.Category category = KeyMapping.Category.register(
                 Identifier.fromNamespaceAndPath(MOD_ID, "controls")
         );
-        keyToggleRecord = KeyMappingHelper.registerKeyMapping(new KeyMapping(
-                "key.fifthnn.toggle_record", InputConstants.Type.KEYBOARD, InputConstants.KEY_F9, category
+        keyHighlight = KeyMappingHelper.registerKeyMapping(new KeyMapping(
+                "key.fifthnn.highlight", InputConstants.Type.KEYBOARD, InputConstants.KEY_F6, category
+        ));
+        keyScrap = KeyMappingHelper.registerKeyMapping(new KeyMapping(
+                "key.fifthnn.scrap", InputConstants.Type.KEYBOARD, InputConstants.KEY_F7, category
         ));
         keyOpenGui = KeyMappingHelper.registerKeyMapping(new KeyMapping(
                 "key.fifthnn.open_gui", InputConstants.Type.KEYBOARD, InputConstants.KEY_F8, category
+        ));
+        keyToggleRecord = KeyMappingHelper.registerKeyMapping(new KeyMapping(
+                "key.fifthnn.toggle_record", InputConstants.Type.KEYBOARD, InputConstants.KEY_F9, category
         ));
         keyToggleAi = KeyMappingHelper.registerKeyMapping(new KeyMapping(
                 "key.fifthnn.toggle_ai", InputConstants.Type.KEYBOARD, InputConstants.KEY_F10, category
@@ -117,8 +134,26 @@ public final class FifthNNClient implements ClientModInitializer {
         );
     }
 
+    private void registerTitleScreenPrompt() {
+        ScreenEvents.AFTER_INIT.register((client, screen, scaledWidth, scaledHeight) -> {
+            if (!(screen instanceof TitleScreen)) return;
+            if (!FifthNNDependencyScreen.hasAnyMissingRecommendation(config)) return;
+
+            // Small unobtrusive corner button to reopen recommended dependency menu anytime
+            Screens.getButtons(screen).add(Button.builder(
+                    Component.literal("§e⚠ 5ifthNN Deps"),
+                    btn -> client.gui.setScreen(new FifthNNDependencyScreen(screen))
+            ).bounds(scaledWidth - 102, 6, 96, 18).build());
+
+            // One-time / 14-day cooldown prompt (never nags every launch)
+            if (!autoDepScreenHandledThisSession && FifthNNDependencyScreen.shouldShowAutoPrompt(config)) {
+                autoDepScreenHandledThisSession = true;
+                client.execute(() -> client.gui.setScreen(new FifthNNDependencyScreen(screen)));
+            }
+        });
+    }
+
     private void registerEvents() {
-        // Capture sub-tick 1.8 PvP click counts right before Minecraft consumes them
         ClientTickEvents.START_CLIENT_TICK.register(mc -> {
             if (mc.player == null || mc.options == null) return;
             int leftClicks = ((KeyMappingAccessor) mc.options.keyAttack).fifthnn$getClickCount();
@@ -139,8 +174,15 @@ public final class FifthNNClient implements ClientModInitializer {
             wasContainerOpen = containerOpen;
         });
 
-        // Main 20 Hz tick loop: hotkeys -> Phase 1 capture -> Phase 2 ONNX inference
         ClientTickEvents.END_CLIENT_TICK.register(mc -> {
+            ViaFlickerGuard.onClientTick(mc.level);
+
+            while (keyHighlight.consumeClick()) {
+                recorder.onHighlightKey(mc);
+            }
+            while (keyScrap.consumeClick()) {
+                recorder.onScrapKey(mc);
+            }
             while (keyToggleRecord.consumeClick()) {
                 recorder.toggleRecording(mc);
             }
@@ -164,7 +206,6 @@ public final class FifthNNClient implements ClientModInitializer {
             }
         });
 
-        // Track block placements, block breaks, and melee attacks for player-placed block detection
         UseBlockCallback.EVENT.register((player, world, hand, hitResult) -> {
             if (world.isClientSide() && hitResult != null) {
                 stateTracker.markBlockPlaced(hitResult.getBlockPos().relative(hitResult.getDirection()));
@@ -184,15 +225,12 @@ public final class FifthNNClient implements ClientModInitializer {
             return InteractionResult.PASS;
         });
 
-        // Server system/plugin message parser for BedWars milestones (beds, kills, final kills, upgrades, win/loss)
-        // Intentionally excludes player CHAT events so other players cannot spoof match milestones in chat.
         ClientReceiveMessageEvents.GAME.register((message, overlay) -> {
             Minecraft mc = Minecraft.getInstance();
             String self = mc.player != null ? mc.player.getGameProfile().name() : "";
             stateTracker.onChatMessage(message.getString(), self);
         });
 
-        // Clean disconnect & shutdown failsafes
         ClientPlayConnectionEvents.DISCONNECT.register((handler, mc) -> {
             aiController.onDisconnect(mc);
             recorder.onDisconnect(mc);

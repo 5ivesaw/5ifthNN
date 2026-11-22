@@ -1,15 +1,19 @@
 """
-5ifthNN Two-Timescale Unified Pure Neural Network (~2.0M parameters).
+5ifthNN Two-Timescale Unified Pure Neural Network (~1.79M inference parameters, v0.3).
 
 Architecture:
   - Spatial Encoder: Embedding(32, 6) + 2 flags over (5, 9, 9) egocentric voxel patch
     -> 2D Conv stack over vertical slice channels -> 128-dim spatial embedding.
-  - Scalar/Lidar/Entity Encoder: LayerNorm + Residual MLP -> 192-dim embedding.
+  - Scalar/Lidar/Entity Encoder: LayerNorm + MLP (+ Dropout in train) -> 192-dim embedding.
   - Slow GRU (192 hidden): Updates every 10 ticks (2 Hz) for long-horizon BedWars memory.
   - Fast GRU (384 hidden): Updates every tick (20 Hz) for crisp 1.8 PvP & bridging control.
   - Factored Policy Heads: Movement(7), Mu-Law Δyaw(25), Mu-Law Δpitch(25),
     Left/Right Click(3+3), Hotbar(10), Masked GUI Slot(56), Value(1).
-  - Training-Only Auxiliary Head: Predicts danger/void risk & HP delta (stripped on ONNX export).
+  - 4 Training-Only 0ms Auxiliary Heads (stripped completely on ONNX export!):
+      1. aux_void_1s:      predicts void/fall >4b within 1s
+      2. aux_next_kin:     predicts next-tick egocentric (dx, dy, dz, onGround)
+      3. aux_enemy_fut:    predicts closest enemy relative (fwd, right, dy) at t+10
+      4. aux_macro_intent: predicts 4-way macro goal (Shop/Gen/OwnBed/EnemyBed) directly from h_slow
 """
 
 from __future__ import annotations
@@ -18,7 +22,6 @@ from typing import Dict, Tuple
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 from .schema import (
     FAST_HIDDEN_DIM,
@@ -57,8 +60,6 @@ class SpatialVoxelEncoder(nn.Module):
         )
 
     def forward(self, voxel_cats: torch.Tensor, voxel_flags: torch.Tensor) -> torch.Tensor:
-        # voxel_cats: (N, 5, 9, 9) int64
-        # voxel_flags: (N, 2, 5, 9, 9) float32
         n = voxel_cats.shape[0]
         emb = self.block_emb(voxel_cats)  # (N, 5, 9, 9, 6)
         emb = emb.permute(0, 1, 4, 2, 3)  # (N, 5, 6, 9, 9)
@@ -70,7 +71,7 @@ class SpatialVoxelEncoder(nn.Module):
 
 
 class FifthNNModel(nn.Module):
-    def __init__(self, include_aux: bool = True):
+    def __init__(self, include_aux: bool = True, dropout: float = 0.1):
         super().__init__()
         self.include_aux = include_aux
 
@@ -79,6 +80,7 @@ class FifthNNModel(nn.Module):
             nn.LayerNorm(NN_SCALAR_OBS_DIM),
             nn.Linear(NN_SCALAR_OBS_DIM, 256),
             nn.SiLU(),
+            nn.Dropout(p=dropout),
             nn.LayerNorm(256),
             nn.Linear(256, 192),
             nn.SiLU(),
@@ -92,6 +94,7 @@ class FifthNNModel(nn.Module):
             nn.LayerNorm(FAST_HIDDEN_DIM),
             nn.Linear(FAST_HIDDEN_DIM, 256),
             nn.SiLU(),
+            nn.Dropout(p=dropout),
         )
 
         # Factored Policy Heads
@@ -106,9 +109,12 @@ class FifthNNModel(nn.Module):
         # Critic Value Head (used in PPO / ReST)
         self.value_head = nn.Linear(256, 1)
 
-        # Auxiliary prediction head (training-only: danger/void risk, hp delta)
+        # 4 Training-Only 0ms Auxiliary Heads (dropped completely when include_aux=False on ONNX export!)
         if include_aux:
-            self.aux_head = nn.Linear(256, 2)
+            self.aux_void_1s = nn.Linear(256, 1)
+            self.aux_next_kin = nn.Linear(256, 4)        # ego (dx, dy, dz) + next onGround logit
+            self.aux_enemy_fut = nn.Linear(256, 3)       # closest enemy ego (fwd, right, dy) at t+10
+            self.aux_macro_intent = nn.Linear(SLOW_HIDDEN_DIM, 4)  # 0=Shop, 1=Gen, 2=OwnBed, 3=EnemyBed
 
     def init_hidden(self, batch_size: int, device: torch.device) -> Tuple[torch.Tensor, torch.Tensor]:
         h_fast = torch.zeros(batch_size, FAST_HIDDEN_DIM, device=device)
@@ -130,7 +136,6 @@ class FifthNNModel(nn.Module):
         fused = torch.cat([sp, sc], dim=-1)
 
         cand_slow = self.slow_gru(fused, h_slow)
-        # Blend with 0/1 mask so ONNX graph stays completely static & branchless
         h_slow_next = update_slow * cand_slow + (1.0 - update_slow) * h_slow
 
         fast_in = torch.cat([fused, h_slow_next], dim=-1)
@@ -147,8 +152,11 @@ class FifthNNModel(nn.Module):
             "gui_logits": self.gui_head(feat),
             "value": self.value_head(feat).squeeze(-1),
         }
-        if self.include_aux and hasattr(self, "aux_head"):
-            out["aux"] = self.aux_head(feat)
+        if self.include_aux and hasattr(self, "aux_void_1s"):
+            out["aux_void_1s"] = self.aux_void_1s(feat).squeeze(-1)
+            out["aux_next_kin"] = self.aux_next_kin(feat)
+            out["aux_enemy_fut"] = self.aux_enemy_fut(feat)
+            out["aux_macro_intent"] = self.aux_macro_intent(h_slow_next)
         return out, h_fast_next, h_slow_next
 
     def forward_sequence(
@@ -161,7 +169,6 @@ class FifthNNModel(nn.Module):
         start_step: int = 0,
     ) -> Tuple[Dict[str, torch.Tensor], torch.Tensor, torch.Tensor]:
         b, t = scalar_obs.shape[:2]
-        # Vectorize encoders over B*T for maximum GPU throughput on Colab L4
         sp = self.spatial_enc(
             voxel_cats.reshape(b * t, NN_VOXEL_SIZE_Y, NN_VOXEL_SIZE_XZ, NN_VOXEL_SIZE_XZ),
             voxel_flags.reshape(b * t, 2, NN_VOXEL_SIZE_Y, NN_VOXEL_SIZE_XZ, NN_VOXEL_SIZE_XZ),
@@ -170,14 +177,17 @@ class FifthNNModel(nn.Module):
         fused_seq = torch.cat([sp, sc], dim=-1)  # (B, T, 320)
 
         fast_states = []
+        slow_states = []
         for step_i in range(t):
             f_t = fused_seq[:, step_i, :]
             if ((start_step + step_i) % SLOW_UPDATE_INTERVAL) == 0:
                 h_slow = self.slow_gru(f_t, h_slow)
             h_fast = self.fast_gru(torch.cat([f_t, h_slow], dim=-1), h_fast)
             fast_states.append(h_fast)
+            slow_states.append(h_slow)
 
         fast_stack = torch.stack(fast_states, dim=1)  # (B, T, 384)
+        slow_stack = torch.stack(slow_states, dim=1)  # (B, T, 192)
         feat = self.head_trunk(fast_stack)
 
         out = {
@@ -190,19 +200,16 @@ class FifthNNModel(nn.Module):
             "gui_logits": self.gui_head(feat),
             "value": self.value_head(feat).squeeze(-1),
         }
-        if self.include_aux and hasattr(self, "aux_head"):
-            out["aux"] = self.aux_head(feat)
+        if self.include_aux and hasattr(self, "aux_void_1s"):
+            out["aux_void_1s"] = self.aux_void_1s(feat).squeeze(-1)
+            out["aux_next_kin"] = self.aux_next_kin(feat)
+            out["aux_enemy_fut"] = self.aux_enemy_fut(feat)
+            out["aux_macro_intent"] = self.aux_macro_intent(slow_stack)
         return out, h_fast, h_slow
 
 
 class OnnxStepWrapper(nn.Module):
-    """
-    Static ONNX export wrapper (strips training-only auxiliary head).
-    Inputs:  voxel_cats(1,5,9,9), voxel_flags(1,2,5,9,9), scalar_obs(1,456),
-             h_fast(1,384), h_slow(1,192), update_slow(1,1)
-    Outputs: move_logits, yaw_logits, pitch_logits, left_logits, right_logits,
-             hotbar_logits, gui_logits, value, h_fast_next, h_slow_next
-    """
+    """Static ONNX export wrapper (strips all 4 training-only auxiliary heads -> 0ms runtime cost)."""
 
     def __init__(self, core: FifthNNModel):
         super().__init__()

@@ -14,6 +14,10 @@ repositories {
 	mavenCentral()
 }
 
+configurations {
+	onnxBundle
+}
+
 loom {
 	mods {
 		"fifthnn" {
@@ -27,9 +31,10 @@ dependencies {
 	implementation "net.fabricmc:fabric-loader:${project.loader_version}"
 	implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
 
-	// Phase 2: Embedded ONNX Runtime for lightweight pure-NN CPU inference (<3ms/tick)
+	// Phase 2 ONNX Runtime: compile-only in main ~150KB JAR, packaged separately in 5ifthNN-OnnxRuntime-<ver>.jar
+	// Install 5ifthNN-OnnxRuntime once in mods/ only when running Phase 2 ONNX inference!
 	implementation "com.microsoft.onnxruntime:onnxruntime:${project.onnxruntime_version}"
-	include "com.microsoft.onnxruntime:onnxruntime:${project.onnxruntime_version}"
+	onnxBundle "com.microsoft.onnxruntime:onnxruntime:${project.onnxruntime_version}"
 }
 
 processResources {
@@ -60,4 +65,46 @@ jar {
 	from("LICENSE") {
 		rename { "${it}_${projectName}" }
 	}
+}
+
+def onnxMetaDir = layout.buildDirectory.dir("generated/onnx-companion")
+
+tasks.register("generateOnnxCompanionMeta") {
+	def ortVer = project.onnxruntime_version
+	inputs.property("ortVer", ortVer)
+	outputs.dir(onnxMetaDir)
+	doLast {
+		def dir = onnxMetaDir.get().asFile
+		dir.mkdirs()
+		new File(dir, "fabric.mod.json").text = """{
+  "schemaVersion": 1,
+  "id": "fifthnn-onnxruntime",
+  "version": "${ortVer}",
+  "name": "5ifthNN ONNX Runtime Companion",
+  "description": "One-time ONNX Runtime library mod for 5ifthNN Phase 2 inference. Only needed when running trained .onnx models.",
+  "authors": ["5ivesaw"],
+  "license": "MIT",
+  "environment": "client",
+  "jars": [
+    { "file": "META-INF/jars/onnxruntime-${ortVer}.jar" }
+  ]
+}
+"""
+	}
+}
+
+tasks.register("buildOnnxRuntimeAddon", Jar) {
+	dependsOn(tasks.named("generateOnnxCompanionMeta"))
+	archiveBaseName.set("5ifthNN-OnnxRuntime")
+	archiveVersion.set(project.onnxruntime_version)
+	destinationDirectory.set(layout.buildDirectory.dir("onnx-addon"))
+	from(onnxMetaDir)
+	from(configurations.onnxBundle) {
+		into("META-INF/jars")
+		rename { "onnxruntime-${project.onnxruntime_version}.jar" }
+	}
+}
+
+tasks.named("assemble").configure {
+	dependsOn(tasks.named("buildOnnxRuntimeAddon"))
 }

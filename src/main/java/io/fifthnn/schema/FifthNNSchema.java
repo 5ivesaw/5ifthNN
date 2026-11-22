@@ -234,6 +234,16 @@ public final class FifthNNSchema {
     public static final int EVT_BLOCK_BROKEN = 1 << 11;
     public static final int EVT_ITEM_BOUGHT = 1 << 12;
 
+    // Append-only sidecar (.tags.jsonl) tag types synchronized with python/fifthnn/audit.py
+    public static final String TAG_PEARL_LANDING = "PEARL_LANDING";
+    public static final String TAG_LAGBACK_QUARANTINE = "LAGBACK_QUARANTINE";
+    public static final String TAG_FLICKER_QUARANTINE = "FLICKER_QUARANTINE";
+    public static final String TAG_LAG_SPIKE = "LAG_SPIKE";
+    public static final String TAG_USER_SCRAP_5S = "USER_SCRAP_5S";
+    public static final String TAG_USER_SCRAP_15S = "USER_SCRAP_15S";
+    public static final String TAG_USER_SCRAP_EPISODE = "USER_SCRAP_EPISODE";
+    public static final String TAG_USER_HIGHLIGHT_8S = "USER_HIGHLIGHT_8S";
+
     public enum RecordingMode {
         FULL_MATCH("Full Match", "Complete Solo/Doubles BedWars matches"),
         DRILL_BRIDGING("Bridging Drill", "Speed-bridging, diagonal bridges, near-ledge clutches"),

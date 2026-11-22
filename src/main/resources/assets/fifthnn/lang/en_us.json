@@ -1,6 +1,8 @@
 {
   "key.category.fifthnn.controls": "5ifthNN AI & Recorder",
-  "key.fifthnn.toggle_record": "Start / Stop Dataset Recording",
+  "key.fifthnn.highlight": "Highlight Last 8s (Good Play)",
+  "key.fifthnn.scrap": "Scrap Last 5s / Double-Tap 15s (Oops)",
+  "key.fifthnn.toggle_record": "Manual Start / Stop Recording",
   "key.fifthnn.open_gui": "Open 5ifthNN Control Panel",
   "key.fifthnn.toggle_ai": "Toggle Phase 2 AI / Emergency Stop",
   "key.fifthnn.dagger_takeover": "HG-DAgger Human Takeover (Hold)"

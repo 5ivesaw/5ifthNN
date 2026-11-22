@@ -23,13 +23,21 @@ public final class FifthNNConfig {
     public String mapNameOverride = "auto";
     public boolean pvpMode18 = true;
     public boolean recordObserverEntities = true;
+    public boolean autoRecordBedWars = true;
     public boolean autoTagLobbyInvalid = true;
     public boolean autoPauseOnUnfocus = true;
     public boolean showHudOverlay = true;
+    public boolean minimalHudMode = true;
+    public boolean enableViaFlickerGuard = true;
+
+    // Smart dependency prompt state (never nags every launch)
+    public long lastDependencyPromptMs = 0L;
+    public boolean suppressDependencyPrompt = false;
 
     // Failsafe thresholds
     public long minFreeDiskMb = 1024L;
     public long maxSessionSizeMb = 512L;
+    public long maxRecordingsFolderMb = 500L;
     public int flushIntervalTicks = 40; // sync-flush every 2 seconds for crash safety
 
     // Phase 2: ONNX Inference & Human Physics Guardrails (calibrated to empirical human profile)

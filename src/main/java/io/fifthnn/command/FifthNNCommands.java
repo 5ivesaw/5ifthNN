@@ -9,6 +9,7 @@ import io.fifthnn.inference.AiController;
 import io.fifthnn.recorder.DatasetRecorderManager;
 import io.fifthnn.schema.FifthNNSchema;
 import io.fifthnn.ui.FifthNNControlScreen;
+import io.fifthnn.ui.FifthNNDependencyScreen;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommands;
 import net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource;
 import net.minecraft.client.Minecraft;
@@ -38,6 +39,52 @@ public final class FifthNNCommands {
                     openGui();
                     return 1;
                 }))
+                .then(ClientCommands.literal("deps").executes(ctx -> {
+                    Minecraft mc = Minecraft.getInstance();
+                    mc.execute(() -> mc.gui.setScreen(new FifthNNDependencyScreen(null)));
+                    return 1;
+                }))
+                .then(ClientCommands.literal("share").executes(ctx -> {
+                    FifthNNClient.getRecorder().exportShareZip(Minecraft.getInstance());
+                    return 1;
+                }))
+                .then(ClientCommands.literal("scrap")
+                        .then(ClientCommands.literal("episode").executes(ctx -> {
+                            FifthNNClient.getRecorder().scrapCurrentEpisode(Minecraft.getInstance());
+                            return 1;
+                        })))
+                .then(ClientCommands.literal("auto")
+                        .then(ClientCommands.literal("on").executes(ctx -> {
+                            FifthNNConfig cfg = FifthNNClient.getConfig();
+                            cfg.autoRecordBedWars = true;
+                            cfg.save();
+                            ctx.getSource().sendFeedback(Component.literal("§a[5ifthNN] Automatic BedWars recording ON"));
+                            return 1;
+                        }))
+                        .then(ClientCommands.literal("off").executes(ctx -> {
+                            FifthNNConfig cfg = FifthNNClient.getConfig();
+                            cfg.autoRecordBedWars = false;
+                            cfg.save();
+                            ctx.getSource().sendFeedback(Component.literal("§e[5ifthNN] Automatic BedWars recording OFF (use F9 manually)"));
+                            return 1;
+                        })))
+                .then(ClientCommands.literal("hud")
+                        .then(ClientCommands.literal("minimal").executes(ctx -> {
+                            FifthNNConfig cfg = FifthNNClient.getConfig();
+                            cfg.showHudOverlay = true;
+                            cfg.minimalHudMode = true;
+                            cfg.save();
+                            ctx.getSource().sendFeedback(Component.literal("§a[5ifthNN] HUD set to Minimal corner dot"));
+                            return 1;
+                        }))
+                        .then(ClientCommands.literal("full").executes(ctx -> {
+                            FifthNNConfig cfg = FifthNNClient.getConfig();
+                            cfg.showHudOverlay = true;
+                            cfg.minimalHudMode = false;
+                            cfg.save();
+                            ctx.getSource().sendFeedback(Component.literal("§a[5ifthNN] HUD set to Full telemetry stats"));
+                            return 1;
+                        })))
                 .then(ClientCommands.literal("rec")
                         .then(ClientCommands.literal("start")
                                 .executes(ctx -> {

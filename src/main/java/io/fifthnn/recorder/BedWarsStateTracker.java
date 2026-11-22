@@ -59,6 +59,22 @@ public final class BedWarsStateTracker {
     private float serverTpsEst = 20.0f;
     private boolean lastFrameValidInGame = false;
 
+    // v0.3.0: Auto-match detection, exact packet lagback vs Ender Pearl distinction, & lag-spike guard
+    private boolean sawBedwarsScoreboard = false;
+    private boolean sawBedwarsStartMessage = false;
+    private volatile boolean pendingServerPositionPacket = false;
+    private boolean lagbackThisTick = false;
+    private boolean pearlLandingThisTick = false;
+    private boolean lagSpikeThisTick = false;
+    private long trackerTickClock = 0L;
+    private long lastPearlThrowTick = -9999L;
+    private long lastPearlSoundTick = -9999L;
+    private int prevPearlCount = 0;
+    private final int[] recentPings = new int[40];
+    private int recentPingCount = 0;
+    private int recentPingCursor = 0;
+    private final PlacementFlickerMonitor flickerMonitor = new PlacementFlickerMonitor();
+
     public synchronized void resetForNewMatch(boolean incrementEpisode) {
         if (incrementEpisode) {
             episodeId++;
@@ -78,20 +94,38 @@ public final class BedWarsStateTracker {
         hasPrevSelfPos = false;
         pendingEventFlags = 0;
         pendingReward = 0.0f;
+        pendingServerPositionPacket = false;
+        lagbackThisTick = false;
+        pearlLandingThisTick = false;
+        lagSpikeThisTick = false;
+        lastPearlThrowTick = -9999L;
+        lastPearlSoundTick = -9999L;
+        prevPearlCount = 0;
+        flickerMonitor.reset();
     }
 
     public synchronized void resetForNewMatch() {
         resetForNewMatch(true);
     }
 
+    public synchronized void onServerPositionPacket() {
+        pendingServerPositionPacket = true;
+    }
+
     public synchronized void markBlockPlaced(BlockPos pos) {
         playerPlacedBlocks.add(pos.asLong());
+        flickerMonitor.onBlockPlaced(pos, trackerTickClock);
         pendingEventFlags |= FifthNNSchema.EVT_BLOCK_PLACED;
     }
 
     public synchronized void markBlockBroken(BlockPos pos) {
         playerPlacedBlocks.remove(pos.asLong());
+        flickerMonitor.onBlockBrokenBySelf(pos, trackerTickClock);
         pendingEventFlags |= FifthNNSchema.EVT_BLOCK_BROKEN;
+    }
+
+    public PlacementFlickerMonitor getFlickerMonitor() {
+        return flickerMonitor;
     }
 
     public synchronized boolean isTrackedPlayerPlaced(BlockPos pos) {
@@ -129,6 +163,7 @@ public final class BedWarsStateTracker {
         if (body.contains("server selector") || body.contains("waiting for players")
                 || body.contains("the game starts in") || body.contains("game starting in")) {
             matchPhase = FifthNNSchema.MATCH_PHASE_LOBBY;
+            sawBedwarsStartMessage = false;
         }
 
         // Match start cues -> cleanly increment episodeId and wipe stale arena landmarks!
@@ -136,6 +171,7 @@ public final class BedWarsStateTracker {
                 || body.contains("the game has started") || body.contains("all generators are now active")) {
             resetForNewMatch(true);
             matchPhase = FifthNNSchema.MATCH_PHASE_IN_GAME;
+            sawBedwarsStartMessage = true;
         }
 
         // Map name from chat ("Map: Rooftop" or "Playing on Rooftop")
@@ -249,27 +285,74 @@ public final class BedWarsStateTracker {
     }
 
     public synchronized void tickAndFillFrame(Minecraft mc, LocalPlayer player, FrameData fr, boolean autoTagLobby) {
-        // Estimate server TPS via wall-clock tick interval
+        trackerTickClock++;
+        lagbackThisTick = false;
+        pearlLandingThisTick = false;
+        lagSpikeThisTick = false;
+
+        // Track Ender Pearl throws & pearl sound cues for pearl-vs-lagback distinction
+        int curPearls = fr.econ[8];
+        if (curPearls < prevPearlCount) {
+            lastPearlThrowTick = trackerTickClock;
+        }
+        prevPearlCount = curPearls;
+        if (fr.rightClicksThisTick > 0 && fr.selectedSlot >= 0 && fr.selectedSlot < 9
+                && (fr.invItemCat[fr.selectedSlot] & 0xFF) == FifthNNSchema.ITEM_ENDER_PEARL) {
+            lastPearlThrowTick = trackerTickClock;
+        }
+        for (var snd : fr.sounds) {
+            if (snd.soundCat() == FifthNNSchema.SND_PEARL) {
+                lastPearlSoundTick = trackerTickClock;
+                break;
+            }
+        }
+
+        // Estimate server TPS via wall-clock tick interval + detect client freezes / ping spikes
         long now = System.currentTimeMillis();
+        long wallDt = 50L;
         if (lastTickWallMs > 0) {
-            long dt = now - lastTickWallMs;
-            if (dt > 5 && dt < 2000) {
-                float instTps = Math.min(20.0f, 1000.0f / dt);
+            wallDt = now - lastTickWallMs;
+            if (wallDt > 5 && wallDt < 2000) {
+                float instTps = Math.min(20.0f, 1000.0f / wallDt);
                 serverTpsEst = 0.9f * serverTpsEst + 0.1f * instTps;
             }
         }
         lastTickWallMs = now;
         fr.serverTpsEst = serverTpsEst;
 
-        // Detect sudden server teleport (> 6 blocks in 1 tick: respawn, queue warp, rubberband)
-        boolean teleportedThisTick = false;
+        int ping = fr.pingMs;
+        int medianPing = computeMedianPing();
+        if (ping > 0) {
+            recentPings[recentPingCursor] = ping;
+            recentPingCursor = (recentPingCursor + 1) % recentPings.length;
+            if (recentPingCount < recentPings.length) recentPingCount++;
+        }
+        if (wallDt > 180L || serverTpsEst < 14.0f || (recentPingCount >= 10 && ping > medianPing + 120)) {
+            lagSpikeThisTick = true;
+        }
+
+        // Detect exact server position sync packet (ClientboundPlayerPositionPacket) OR >6b jump
+        boolean gotPosPacket = pendingServerPositionPacket;
+        pendingServerPositionPacket = false;
+
+        double jumpDist = 0.0;
         if (hasPrevSelfPos) {
-            double jumpDist = Math.sqrt(
+            jumpDist = Math.sqrt(
                     sq(player.getX() - prevSelfX) + sq(player.getY() - prevSelfY) + sq(player.getZ() - prevSelfZ)
             );
-            if (jumpDist > 6.0) {
+        }
+
+        boolean teleportedThisTick = false;
+        if (hasPrevSelfPos && (gotPosPacket || jumpDist > 6.0)) {
+            boolean recentPearl = (trackerTickClock - lastPearlThrowTick <= 120L);
+            boolean pearlEvidence = (trackerTickClock - lastPearlSoundTick <= 15L) || player.hurtTime > 0 || jumpDist > 5.0;
+            if (recentPearl && pearlEvidence && jumpDist < 80.0 && player.isAlive() && !player.isSpectator()) {
+                // Legitimate Ender Pearl landing: keep sequence continuous!
+                pearlLandingThisTick = true;
+            } else {
                 teleportedThisTick = true;
-                // Zero out fake 180-deg rotation snap caused by server teleport so BC aim never gets poisoned!
+                lagbackThisTick = true;
+                // Zero out fake rotation snap caused by server teleport/rubberband
                 fr.deltaYaw = 0.0f;
                 fr.deltaPitch = 0.0f;
             }
@@ -445,6 +528,7 @@ public final class BedWarsStateTracker {
             }
         }
 
+        sawBedwarsScoreboard = sawBedwarsTeams;
         if (sawLobbyLine && !sawBedwarsTeams) {
             matchPhase = FifthNNSchema.MATCH_PHASE_LOBBY;
         } else if (sawBedwarsTeams) {
@@ -452,6 +536,62 @@ public final class BedWarsStateTracker {
             enemyBedsAliveMask = livingEnemyBeds;
             enemiesAliveCount = livingTeams;
         }
+    }
+
+    /**
+     * Multi-signal vote (>= 2 signals) confirming the player is in an active BedWars match
+     * (never triggers in hubs, waiting cages, SkyWars, Duels, or survival).
+     */
+    public synchronized boolean isConfidentBedWarsMatch(Minecraft mc, LocalPlayer player) {
+        if (mc == null || player == null || mc.level == null) return false;
+        if (player.isSpectator() || !player.isAlive()) return false;
+        if (matchPhase == FifthNNSchema.MATCH_PHASE_POST_GAME || matchPhase == FifthNNSchema.MATCH_PHASE_SPECTATING) {
+            return false;
+        }
+        if (isInHubOrWaitingLobby(player)) return false;
+
+        int votes = 0;
+        if (sawBedwarsScoreboard || sawBedwarsStartMessage) votes++;
+        if (hasBedWarsGearOrBlocks(player)) votes++;
+        if (landmarkCache.getTrackedBedCount() > 0 || landmarkCache.getTrackedShopCount() > 0 || landmarkCache.getTrackedGenCount() > 0) {
+            votes++;
+        }
+        return votes >= 2;
+    }
+
+    public synchronized boolean shouldAutoStopMatch(LocalPlayer player) {
+        if (player == null) return true;
+        if (matchPhase == FifthNNSchema.MATCH_PHASE_POST_GAME || matchPhase == FifthNNSchema.MATCH_PHASE_SPECTATING) {
+            return true;
+        }
+        if (matchPhase == FifthNNSchema.MATCH_PHASE_LOBBY && isInHubOrWaitingLobby(player)) {
+            return true;
+        }
+        return false;
+    }
+
+    private int computeMedianPing() {
+        if (recentPingCount == 0) return 0;
+        int[] copy = new int[recentPingCount];
+        System.arraycopy(recentPings, 0, copy, 0, recentPingCount);
+        java.util.Arrays.sort(copy);
+        return copy[copy.length / 2];
+    }
+
+    public boolean isLagbackThisTick() {
+        return lagbackThisTick;
+    }
+
+    public boolean isPearlLandingThisTick() {
+        return pearlLandingThisTick;
+    }
+
+    public boolean isLagSpikeThisTick() {
+        return lagSpikeThisTick;
+    }
+
+    public long getTrackerTickClock() {
+        return trackerTickClock;
     }
 
     /**

@@ -4,7 +4,6 @@ import io.fifthnn.FifthNNClient;
 import io.fifthnn.config.FifthNNConfig;
 import io.fifthnn.inference.AiController;
 import io.fifthnn.recorder.DatasetRecorderManager;
-import io.fifthnn.schema.FifthNNSchema;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.screens.Screen;
@@ -14,8 +13,8 @@ import net.minecraft.util.ARGB;
 import java.util.List;
 
 /**
- * Native Minecraft 26.3 Control Panel GUI (GuiGraphicsExtractor / extractRenderState)
- * for selecting Phase 1 recording modes/tags and controlling Phase 2 ONNX inference & guardrails.
+ * Native Minecraft 26.3 Control Panel GUI (v0.3.0) for Phase 1 auto-recorder settings,
+ * share export, dependency setup, and Phase 2 ONNX inference & guardrails.
  */
 public final class FifthNNControlScreen extends Screen {
     private static final String[] SERVER_PROFILES = {"auto", "local", "pika", "jartex", "mineberry", "hypixel", "custom"};
@@ -48,11 +47,11 @@ public final class FifthNNControlScreen extends Screen {
         int colR = cx + 5;
         int bw = 150;
         int bh = 20;
-        int y = 42;
+        int y = 36;
 
-        // === PHASE 1: DATASET RECORDER ===
+        // === PHASE 1: AUTO-RECORDER ===
         addRenderableWidget(Button.builder(
-                Component.literal(recorder.isRecording() ? "§c■ Stop Recording (F9)" : "§a● Start Recording (F9)"),
+                Component.literal(recorder.isRecording() ? "§c■ Stop Recording (F9)" : "§a● Manual Record (F9)"),
                 btn -> {
                     if (this.minecraft != null) {
                         recorder.toggleRecording(this.minecraft);
@@ -62,14 +61,23 @@ public final class FifthNNControlScreen extends Screen {
         ).bounds(colL, y, bw, bh).build());
 
         addRenderableWidget(Button.builder(
+                Component.literal("Auto-Record BW: " + (config.autoRecordBedWars ? "§aON" : "§7OFF")),
+                btn -> {
+                    config.autoRecordBedWars = !config.autoRecordBedWars;
+                    config.save();
+                    rebuildWidgets();
+                }
+        ).bounds(colR, y, bw, bh).build());
+
+        y += 24;
+        addRenderableWidget(Button.builder(
                 Component.literal("Mode: §e" + config.getRecordingModeEnum().displayName),
                 btn -> {
                     config.setRecordingModeEnum(config.getRecordingModeEnum().next());
                     rebuildWidgets();
                 }
-        ).bounds(colR, y, bw, bh).build());
+        ).bounds(colL, y, bw, bh).build());
 
-        y += 26;
         addRenderableWidget(Button.builder(
                 Component.literal("Server Tag: §b" + config.serverProfile),
                 btn -> {
@@ -84,38 +92,55 @@ public final class FifthNNControlScreen extends Screen {
                     config.save();
                     rebuildWidgets();
                 }
+        ).bounds(colR, y, bw, bh).build());
+
+        y += 24;
+        addRenderableWidget(Button.builder(
+                Component.literal("HUD: " + (!config.showHudOverlay ? "§7OFF" : (config.minimalHudMode ? "§aMinimal Dot" : "§bFull Stats"))),
+                btn -> {
+                    if (!config.showHudOverlay) {
+                        config.showHudOverlay = true;
+                        config.minimalHudMode = true;
+                    } else if (config.minimalHudMode) {
+                        config.minimalHudMode = false;
+                    } else {
+                        config.showHudOverlay = false;
+                    }
+                    config.save();
+                    rebuildWidgets();
+                }
         ).bounds(colL, y, bw, bh).build());
 
         addRenderableWidget(Button.builder(
-                Component.literal("PvP Mode: " + (config.pvpMode18 ? "§a1.8 BedWars" : "§7Modern")),
+                Component.literal("Flicker Guard: " + (config.enableViaFlickerGuard ? "§aON" : "§7OFF")),
                 btn -> {
-                    config.pvpMode18 = !config.pvpMode18;
+                    config.enableViaFlickerGuard = !config.enableViaFlickerGuard;
                     config.save();
                     rebuildWidgets();
                 }
         ).bounds(colR, y, bw, bh).build());
 
-        y += 26;
+        y += 24;
         addRenderableWidget(Button.builder(
-                Component.literal("Filter Lobby/Spec: " + (config.autoTagLobbyInvalid ? "§aON" : "§cOFF")),
+                Component.literal("§bExport Share ZIP"),
                 btn -> {
-                    config.autoTagLobbyInvalid = !config.autoTagLobbyInvalid;
-                    config.save();
-                    rebuildWidgets();
+                    if (this.minecraft != null) {
+                        recorder.exportShareZip(this.minecraft);
+                    }
                 }
         ).bounds(colL, y, bw, bh).build());
 
         addRenderableWidget(Button.builder(
-                Component.literal("HUD Overlay: " + (config.showHudOverlay ? "§aON" : "§7OFF")),
+                Component.literal("§eRecommended Setup"),
                 btn -> {
-                    config.showHudOverlay = !config.showHudOverlay;
-                    config.save();
-                    rebuildWidgets();
+                    if (this.minecraft != null) {
+                        this.minecraft.gui.setScreen(new FifthNNDependencyScreen(this));
+                    }
                 }
         ).bounds(colR, y, bw, bh).build());
 
         // === PHASE 2: ONNX PURE NN ENGINE ===
-        y += 38;
+        y += 32;
         String currentModelLabel = availableModels.isEmpty()
                 ? "Model: §7(none in models/)"
                 : "Model: §b" + availableModels.get(modelIndex);
@@ -144,7 +169,7 @@ public final class FifthNNControlScreen extends Screen {
                 }
         ).bounds(colR, y, bw, bh).build());
 
-        y += 26;
+        y += 24;
         addRenderableWidget(Button.builder(
                 Component.literal("AI Mode: §d" + ai.getMode().displayName),
                 btn -> {
@@ -164,30 +189,11 @@ public final class FifthNNControlScreen extends Screen {
                 }
         ).bounds(colR, y, bw, bh).build());
 
-        y += 26;
-        addRenderableWidget(Button.builder(
-                Component.literal("Max Human CPS: §e" + config.maxHumanCps),
-                btn -> {
-                    config.maxHumanCps = (config.maxHumanCps >= 14) ? 8 : (config.maxHumanCps + 1);
-                    config.save();
-                    rebuildWidgets();
-                }
-        ).bounds(colL, y, bw, bh).build());
-
+        y += 24;
         addRenderableWidget(Button.builder(
                 Component.literal("Mouse GCD Smooth: " + (config.enableMouseGcdSmoothing ? "§aON" : "§7OFF")),
                 btn -> {
                     config.enableMouseGcdSmoothing = !config.enableMouseGcdSmoothing;
-                    config.save();
-                    rebuildWidgets();
-                }
-        ).bounds(colR, y, bw, bh).build());
-
-        y += 26;
-        addRenderableWidget(Button.builder(
-                Component.literal(String.format("Temp: §e%.2f", config.samplingTemperature)),
-                btn -> {
-                    config.samplingTemperature = (config.samplingTemperature >= 1.15f) ? 0.50f : (config.samplingTemperature + 0.15f);
                     config.save();
                     rebuildWidgets();
                 }
@@ -218,20 +224,18 @@ public final class FifthNNControlScreen extends Screen {
         int gray = ARGB.opaque(0xB0B8C8);
         int cyan = ARGB.opaque(0x38BDF8);
 
-        drawCentered(graphics, "§l5ifthNN §r§7— Pure NN BedWars AI (MC 26.3 / 1.8 PvP)", cx, 12, white);
-        drawCentered(graphics, "§7Phase 1: 1:1 Structured Dataset Recorder", cx, 28, cyan);
-        drawCentered(graphics, "§8" + config.getRecordingModeEnum().description, cx, 118, gray);
-        drawCentered(graphics, "§7Phase 2: Embedded ONNX Runtime Engine (~2.0M params)", cx, 134, cyan);
+        drawCentered(graphics, "§l5ifthNN v0.3 §r§7— Pure NN BedWars AI (MC 26.3 / 1.8 PvP)", cx, 10, white);
+        drawCentered(graphics, "§7Phase 1: Zero-Config Auto-Recorder (F6=Highlight, F7=Scrap 5s/15s, F9=Manual)", cx, 23, cyan);
+        drawCentered(graphics, "§7Phase 2: Optional ONNX Runtime Engine (~1.8M params)", cx, 130, cyan);
 
         String footer = String.format(
-                "Recorder: %s | ONNX: %s (%.2f ms)",
-                recorder.isRecording()
-                        ? ("REC " + recorder.getValidFramesWritten() + " valid ticks")
-                        : recorder.getLastStatusMessage(),
-                ai.getEngine().getLoadedModelName(),
-                ai.getEngine().getEmaLatencyMs()
+                "State: %s | Saved: %.1fm (%d matches) | ONNX: %s",
+                recorder.getRecorderState().name(),
+                recorder.getTotalSavedMinutes(),
+                recorder.getTotalSavedMatches(),
+                ai.getEngine().getLoadedModelName()
         );
-        drawCentered(graphics, footer, cx, this.height - 20, gray);
+        drawCentered(graphics, footer, cx, this.height - 16, gray);
     }
 
     private void drawCentered(GuiGraphicsExtractor graphics, String text, int centerX, int y, int color) {

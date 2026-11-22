@@ -3,6 +3,8 @@
   "package": "io.fifthnn.mixin",
   "compatibilityLevel": "JAVA_25",
   "client": [
+    "BlockStatePredictionHandlerMixin",
+    "ClientPacketListenerMixin",
     "KeyMappingAccessor",
     "MultiPlayerGameModeAccessor",
     "MouseHandlerMixin",

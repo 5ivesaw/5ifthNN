@@ -21,7 +21,7 @@ import torch
 import torch.nn.functional as F
 
 from .audit import split_contiguous_segments
-from .dataset_io import FrameRecord, read_recording
+from .dataset_io import FrameRecord, find_recordings, load_tags_sidecar, read_recording
 from .features import encode_frame_obs, encode_frame_targets
 from .model import FifthNNModel
 from .schema import (
@@ -126,35 +126,37 @@ def run_ppo_update_on_rollouts(
     for p in ref_bc.parameters():
         p.requires_grad_(False)
 
-    files = sorted(glob.glob(str(Path(rollout_dir) / "**/*.5nn*"), recursive=True))
+    files = find_recordings(rollout_dir)
     if not files:
         raise FileNotFoundError(f"No self-play rollout recordings found in {rollout_dir}")
 
     opt = torch.optim.AdamW(policy.parameters(), lr=lr, weight_decay=1e-4)
 
-    # Pre-encode contiguous episodes & compute old log-probs + GAE advantages
+    # Pre-encode contiguous episodes with exact 1-tick causal parity obs(t) -> act(t+1)
     chunks = []
     episode_count = 0
     for path in files:
         header, raw_frames = read_recording(path, valid_only=False)
-        segments = split_contiguous_segments(raw_frames)
+        tags = load_tags_sidecar(path)
+        segments = split_contiguous_segments(raw_frames, tags=tags)
         pvp18 = header.get("pvpMode", "1.8") == "1.8"
         srv_id = hash(header.get("serverProfile", "local")) & 0x7
 
         for frames in segments:
-            if len(frames) < chunk_len:
+            if len(frames) < chunk_len + 1:
                 continue
             episode_count += 1
+            usable_len = len(frames) - 1
 
-            rewards = compute_bedwars_shaped_rewards(frames)
+            rewards = compute_bedwars_shaped_rewards(frames[1 : usable_len + 1])
             vc, vf, obs = [], [], []
             tgts = {k: [] for k in ("move", "yaw_bin", "pitch_bin", "left_state", "right_state", "hotbar", "gui_action", "gui_open")}
-            for fr in frames:
-                c, f, o = encode_frame_obs(fr, server_profile_id=srv_id, pvp_mode_18=pvp18, mirror=False)
+            for ti in range(usable_len):
+                c, f, o = encode_frame_obs(frames[ti], server_profile_id=srv_id, pvp_mode_18=pvp18, mirror=False)
                 vc.append(c)
                 vf.append(f)
                 obs.append(o)
-                t = encode_frame_targets(fr, mirror=False)
+                t = encode_frame_targets(frames[ti + 1], mirror=False)
                 for k in tgts:
                     tgts[k].append(t[k])
 
@@ -183,7 +185,7 @@ def run_ppo_update_on_rollouts(
             adv, ret = compute_gae(rewards, vals)
             adv = (adv - adv.mean()) / (adv.std() + 1e-6)
 
-            for s in range(0, len(frames) - chunk_len + 1, chunk_len):
+            for s in range(0, usable_len - chunk_len + 1, chunk_len):
                 e = s + chunk_len
                 chunks.append(
                     {

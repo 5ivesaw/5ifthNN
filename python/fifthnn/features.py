@@ -127,12 +127,20 @@ def encode_frame_obs(
     server_profile_id: int = 0,
     pvp_mode_18: bool = True,
     mirror: bool = False,
+    hotbar_perm: list[int] | None = None,
+    aug_noise: bool = False,
+    rng: np.random.Generator | None = None,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Convert one raw 1:1 FrameRecord into neural network input tensors:
       voxel_cats:  int64[5, 9, 9]
       voxel_flags: float32[2, 5, 9, 9]
       scalar_obs:  float32[456]
+
+    Optional training-only augmentations:
+      - mirror:      exact left-right mirror symmetry (2x free data)
+      - hotbar_perm: GUI-safe 0..8 hotbar permutation (applied ONLY when fr.gui_type == 0!)
+      - aug_noise:   tiny sensor jitter on remote velocities/lidar + 5% distant landmark/sound dropout
     """
     sign_r = -1.0 if mirror else 1.0
     voxel_cats, voxel_flags = extract_egocentric_voxels(fr.voxels, fr.yaw, mirror=mirror)
@@ -143,7 +151,10 @@ def encode_frame_obs(
     # 1. Panoramic 32-ray lidar (128 floats)
     for i in range(LIDAR_RAY_COUNT):
         src = _mirror_lidar_index(i) if mirror else i
-        obs[off + 0] = min(fr.lidar_dist[src] / 32.0, 1.0)
+        d_norm = min(fr.lidar_dist[src] / 32.0, 1.0)
+        if aug_noise and rng is not None:
+            d_norm = float(np.clip(d_norm + rng.normal(0.0, 0.004), 0.0, 1.0))
+        obs[off + 0] = d_norm
         obs[off + 1] = fr.lidar_cat[src] / float(NUM_BLOCK_CATS)
         obs[off + 2] = 1.0 if (fr.lidar_flags[src] & 0x01) else 0.0
         obs[off + 3] = 1.0 if (fr.lidar_flags[src] & 0x04) else 0.0
@@ -175,9 +186,9 @@ def encode_frame_obs(
         obs[base + 3] = max(-1.0, min(1.0, right / 32.0))
         obs[base + 4] = max(-1.0, min(1.0, dy / 16.0))
         obs[base + 5] = min(dist / 48.0, 1.0)
-        obs[base + 6] = max(-1.0, min(1.0, rvx))
+        obs[base + 6] = max(-1.0, min(1.0, rvx + (float(rng.normal(0.0, 0.015)) if (aug_noise and rng is not None) else 0.0)))
         obs[base + 7] = max(-1.0, min(1.0, p[8] - fr.vy))
-        obs[base + 8] = max(-1.0, min(1.0, rvz))
+        obs[base + 8] = max(-1.0, min(1.0, rvz + (float(rng.normal(0.0, 0.015)) if (aug_noise and rng is not None) else 0.0)))
         obs[base + 9] = math.sin(rel_yaw)
         obs[base + 10] = math.cos(rel_yaw)
         obs[base + 11] = max(-1.0, min(1.0, looking_at_me))
@@ -266,10 +277,16 @@ def encode_frame_obs(
     for i in range(6):
         obs[s0 + 48 + i] = fr.gear_tiers[i] / 4.0
     # Hotbar 9 item categories + 9 selected-slot one-hot + 9 stack fill ratios + 3 reserve = 30 floats
+    # Critical Invariant #2: Only apply 0..8 hotbar permutation when GUI is closed (gui_type == 0)!
+    use_perm = hotbar_perm is not None and len(hotbar_perm) == 9 and fr.gui_type == 0
+    eff_selected = fr.selected_slot
+    if use_perm and 0 <= fr.selected_slot < 9:
+        eff_selected = hotbar_perm.index(fr.selected_slot)
     for slot in range(9):
-        obs[s0 + 54 + slot] = fr.inventory[slot, 0] / float(NUM_ITEM_CATS)
-        obs[s0 + 63 + slot] = 1.0 if fr.selected_slot == slot else 0.0
-        obs[s0 + 72 + slot] = min(fr.inventory[slot, 1] / 64.0, 1.0)
+        src_slot = hotbar_perm[slot] if use_perm else slot
+        obs[s0 + 54 + slot] = fr.inventory[src_slot, 0] / float(NUM_ITEM_CATS)
+        obs[s0 + 63 + slot] = 1.0 if eff_selected == slot else 0.0
+        obs[s0 + 72 + slot] = min(fr.inventory[src_slot, 1] / 64.0, 1.0)
     obs[s0 + 81] = float(fr.inventory[fr.selected_slot, 0]) / float(NUM_ITEM_CATS) if 0 <= fr.selected_slot < 9 else 0.0
     obs[s0 + 82] = min(fr.inventory[fr.selected_slot, 1] / 64.0, 1.0) if 0 <= fr.selected_slot < 9 else 0.0
     obs[s0 + 83] = 1.0 if (0 <= fr.selected_slot < 9 and fr.inventory[fr.selected_slot, 2] > 0) else 0.0
@@ -291,9 +308,11 @@ def encode_frame_obs(
         if lm_tuple is None:
             return
         dx, dy, dz = lm_tuple[2] - fr.x, lm_tuple[3] - fr.y, lm_tuple[4] - fr.z
+        dist = math.sqrt(dx * dx + dy * dy + dz * dz) + 1e-6
+        if aug_noise and rng is not None and dist > 20.0 and rng.random() < 0.05:
+            return
         fwd, right = _world_to_ego(dx, dz, fr.yaw)
         right *= sign_r
-        dist = math.sqrt(dx * dx + dy * dy + dz * dz) + 1e-6
         obs[slot_offset + 0] = 1.0
         obs[slot_offset + 1] = min(dist / 128.0, 1.0)
         obs[slot_offset + 2] = fwd / dist
@@ -366,18 +385,32 @@ def encode_frame_obs(
     return voxel_cats, voxel_flags, obs
 
 
-def encode_frame_targets(fr: FrameRecord, mirror: bool = False) -> Dict[str, np.ndarray | int]:
-    """Encode ground-truth human actions from a FrameRecord (with optional left-right mirror)."""
+def encode_frame_targets(
+    fr: FrameRecord,
+    mirror: bool = False,
+    hotbar_perm: list[int] | None = None,
+) -> Dict[str, np.ndarray | int]:
+    """
+    Encode ground-truth human actions from a FrameRecord (v0.3):
+      - Exact left-right mirror symmetry
+      - ToggleSprint / Hold-Sprint normalization (active sprint intent: W held & NOT sneaking)
+      - GUI-safe 0..8 hotbar permutation (applied ONLY when fr.gui_type == 0!)
+    """
     km = fr.key_mask
+    w_down = bool(km & KEY_W)
+    sneak_down = bool(km & KEY_SNEAK)
+    sprinting_active = bool(fr.self_flags & (1 << 2))
+    sprint_intent = 1.0 if ((sprinting_active or bool(km & KEY_SPRINT)) and w_down and not sneak_down) else 0.0
+
     move = np.array(
         [
-            1.0 if (km & KEY_W) else 0.0,
+            1.0 if w_down else 0.0,
             1.0 if (km & (KEY_D if mirror else KEY_A)) else 0.0,
             1.0 if (km & KEY_S) else 0.0,
             1.0 if (km & (KEY_A if mirror else KEY_D)) else 0.0,
             1.0 if (km & KEY_JUMP) else 0.0,
-            1.0 if (km & KEY_SNEAK) else 0.0,
-            1.0 if (km & KEY_SPRINT) else 0.0,
+            1.0 if sneak_down else 0.0,
+            sprint_intent,
         ],
         dtype=np.float32,
     )
@@ -401,7 +434,12 @@ def encode_frame_targets(fr: FrameRecord, mirror: bool = False) -> Dict[str, np.
     else:
         right_state = 0
 
-    hotbar = (fr.hotbar_key + 1) if 0 <= fr.hotbar_key <= 8 else 0
+    use_perm = hotbar_perm is not None and len(hotbar_perm) == 9 and fr.gui_type == 0
+    if 0 <= fr.hotbar_key <= 8:
+        mapped_hb = hotbar_perm.index(fr.hotbar_key) if use_perm else fr.hotbar_key
+        hotbar = mapped_hb + 1
+    else:
+        hotbar = 0
 
     # GUI action: 0=noop, 1=close_gui, 2..55=slot 0..53
     if fr.gui_click_slot == -2:

@@ -24,7 +24,7 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Build 5ifthNN Mod JAR
+      - name: Build 5ifthNN (~150KB) & ONNX Companion JARs
         run: ./gradlew build --stacktrace
 
       - name: Diagnostic MC 26.3 Class Dump (on failure only)
@@ -33,17 +33,15 @@ jobs:
           MC_JAR=$(find .gradle ~/.gradle -name "*minecraft*26.3*.jar" 2>/dev/null | head -n 1)
           echo "MC_JAR=$MC_JAR"
           if [ -n "$MC_JAR" ]; then
-            echo "--- MouseHandler ---"
-            javap -p -cp "$MC_JAR" net.minecraft.client.MouseHandler | head -n 45 || true
-            echo "--- MultiPlayerGameMode ---"
-            javap -p -cp "$MC_JAR" net.minecraft.client.multiplayer.MultiPlayerGameMode | head -n 60 || true
-            echo "--- DyedItemColor ---"
-            javap -p -cp "$MC_JAR" net.minecraft.world.item.component.DyedItemColor || true
-            echo "--- ClientLevel isLoaded ---"
-            javap -p -cp "$MC_JAR" net.minecraft.world.level.Level | grep -i loaded || true
+            echo "--- ClientPacketListener ---"
+            javap -p -cp "$MC_JAR" net.minecraft.client.multiplayer.ClientPacketListener | grep -iE "move|pos" || true
+            echo "--- BlockStatePredictionHandler ---"
+            javap -p -cp "$MC_JAR" net.minecraft.client.multiplayer.prediction.BlockStatePredictionHandler || true
+            echo "--- ConfirmLinkScreen ---"
+            javap -p -cp "$MC_JAR" net.minecraft.client.gui.screens.ConfirmLinkScreen || true
           fi
 
-      - name: Verify Mixin Targets in MC 26.3 Bytecode
+      - name: Verify Mixin Targets in MC 26.3 Bytecode & Lightweight JAR Size
         run: |
           MC_JAR=$(find .gradle ~/.gradle -name "*minecraft*26.3*.jar" 2>/dev/null | head -n 1)
           echo "Verifying mixins against $MC_JAR"
@@ -51,12 +49,26 @@ jobs:
           javap -p -cp "$MC_JAR" net.minecraft.client.MouseHandler | grep -E "minecraft|accumulatedDX|accumulatedDY|turnPlayer"
           javap -p -cp "$MC_JAR" net.minecraft.client.multiplayer.MultiPlayerGameMode | grep -E "handleContainerInput|destroyProgress|attack\("
           javap -p -cp "$MC_JAR" net.minecraft.client.sounds.SoundEngine | grep -E "play\("
+          javap -p -cp "$MC_JAR" net.minecraft.client.multiplayer.ClientPacketListener | grep -E "handleMovePlayer"
+          javap -p -cp "$MC_JAR" net.minecraft.client.multiplayer.prediction.BlockStatePredictionHandler | grep -E "endPredictionsUpTo"
 
-      - name: Upload 5ifthNN Mod Artifact
+          ls -lh build/libs/ build/onnx-addon/
+          MAIN_JAR=$(ls build/libs/5ifthNN-*.jar | grep -v sources | head -n 1)
+          MAIN_SIZE=$(stat -c%s "$MAIN_JAR")
+          echo "Main mod JAR: $MAIN_JAR ($MAIN_SIZE bytes)"
+          test "$MAIN_SIZE" -lt 1048576
+
+      - name: Upload 5ifthNN Main Mod Artifact (~150KB)
         uses: actions/upload-artifact@v4
         with:
           name: 5ifthNN-mc26.3-fabric-mod
-          path: build/libs/*.jar
+          path: build/libs/5ifthNN-*.jar
+
+      - name: Upload 5ifthNN ONNX Runtime Companion Artifact (One-Time Phase 2 Lib)
+        uses: actions/upload-artifact@v4
+        with:
+          name: 5ifthNN-onnxruntime-companion
+          path: build/onnx-addon/5ifthNN-OnnxRuntime-*.jar
 
   test-python:
     name: Verify Python Training & Schema Parity
@@ -76,11 +88,12 @@ jobs:
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install numpy onnx onnxscript onnxruntime matplotlib tqdm
 
-      - name: Run Schema v1/v2, Binary I/O, Audit & Visualizer Tests
+      - name: Run Schema v1/v2, Causal Parity, Void/Hotbar, Audit & Visualizer Tests
         working-directory: python
         run: |
           PYTHONPATH=. python3 tests/test_schema_and_io.py
           PYTHONPATH=. python3 tests/test_end_to_end_pipeline.py
+          PYTHONPATH=. python3 tests/test_bc_causal_and_aux.py
 
       - name: Smoke-test Model Parameter Count & ONNX FP32 + INT8 Export Parity
         working-directory: python

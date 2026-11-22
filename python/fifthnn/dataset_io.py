@@ -8,6 +8,7 @@ and payload byte lengths before unpacking.
 
 from __future__ import annotations
 
+import glob
 import gzip
 import json
 import struct
@@ -352,6 +353,36 @@ def read_recording(path: str | Path, valid_only: bool = False) -> Tuple[Dict, Li
                 break
 
     return header, frames
+
+
+def find_recordings(target: str | Path) -> List[str]:
+    """Return sorted .5nn / .5nn.gz recording paths, ignoring .meta.json and .tags.jsonl sidecars."""
+    t = Path(target)
+    if t.is_file():
+        return [str(t)]
+    return sorted(
+        p for p in glob.glob(str(t / "**/*.5nn*"), recursive=True) if p.endswith((".5nn", ".5nn.gz"))
+    )
+
+
+def load_tags_sidecar(rec_path: str | Path) -> List[Dict]:
+    """Load optional append-only `<recording>.tags.jsonl` sidecar (returns [] if absent)."""
+    tags_path = Path(str(rec_path) + ".tags.jsonl")
+    if not tags_path.exists():
+        return []
+    out: List[Dict] = []
+    try:
+        for line in tags_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                out.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    except OSError:
+        return []
+    return out
 
 
 def summarize_recording(path: str | Path) -> Dict:

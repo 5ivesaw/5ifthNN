@@ -3,14 +3,14 @@
   "id": "fifthnn",
   "version": "${version}",
   "name": "5ifthNN",
-  "description": "Pure Neural Network BedWars AI \u2014 Phase 1 High-Fidelity 1:1 Dataset Recorder & Phase 2 Lightweight ONNX Runtime Inference Engine for Minecraft 26.3 (1.8-style BedWars PvP).",
+  "description": "Pure Neural Network BedWars AI — Phase 1 Foolproof 1:1 Auto-Recorder & Phase 2 Lightweight ONNX Runtime Inference Engine for Minecraft 26.3 (1.8-style BedWars PvP).",
   "authors": [
     "5ivesaw"
   ],
   "contact": {
     "sources": "https://github.com/5ivesaw/5ifthNN"
   },
-  "license": "GPL-3.0-or-later",
+  "license": "GPL-3.0",
   "environment": "client",
   "entrypoints": {
     "client": [
@@ -25,5 +25,9 @@
     "minecraft": "~26.3",
     "java": ">=25",
     "fabric-api": "*"
+  },
+  "suggests": {
+    "viafabricplus": ">=5.1.0",
+    "fifthnn-onnxruntime": "*"
   }
 }
