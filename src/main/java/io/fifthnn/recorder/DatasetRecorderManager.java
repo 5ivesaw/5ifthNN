@@ -252,8 +252,8 @@ public final class DatasetRecorderManager {
                     pruneReason = "too short (<20s)";
                 } else if (idlePct > 75.0) {
                     pruneReason = String.format("mostly AFK (%.0f%% idle)", idlePct);
-                } else if (avgPingMs > 200.0) {
-                    pruneReason = String.format("high ping (avg %.0fms > 200ms)", avgPingMs);
+                } else if (avgPingMs > 280.0 || (avgPingMs > 200.0 && lagbacksPerMin > 3.0)) {
+                    pruneReason = String.format("unstable high ping (avg %.0fms, RB=%.1f/m)", avgPingMs, lagbacksPerMin);
                     notifyPlayer(mc, "§e[5ifthNN] Skipped laggy match (" + pruneReason + ")");
                 } else if (flickerRate > 0.30 || lagbacksPerMin > 8.0) {
                     pruneReason = String.format("severe lag/flickers (FLK=%d, RB=%d)", sessionFlickers, sessionLagbacks);
@@ -555,8 +555,8 @@ public final class DatasetRecorderManager {
                             if (obj.has("avgPingMs")) avgPing = obj.get("avgPingMs").getAsDouble();
                         } catch (Exception ignored) {}
                     }
-                    // Evaluator filter: keep only Grade A/B with >= 20s valid gameplay, < 65% idle, and <= 200ms ping
-                    if ("C".equalsIgnoreCase(grade) || avgPing > 200.0 || (Files.exists(meta) && (mins < 0.33 || idlePct > 65.0))) {
+                    // Evaluator filter: keep Grade A/B with >= 20s valid gameplay, < 65% idle, and <= 280ms steady ping
+                    if ("C".equalsIgnoreCase(grade) || avgPing > 280.0 || (Files.exists(meta) && (mins < 0.33 || idlePct > 65.0))) {
                         skipped++;
                         continue;
                     }
