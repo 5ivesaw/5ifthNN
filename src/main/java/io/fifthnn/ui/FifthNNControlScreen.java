@@ -174,13 +174,23 @@ public final class FifthNNControlScreen extends Screen {
         ).bounds(colL, y, bw, bh).build());
 
         addRenderableWidget(Button.builder(
-                Component.literal("§eRecommended Setup"),
-                btn -> {
-                    if (this.minecraft != null) {
-                        this.minecraft.gui.setScreen(new FifthNNDependencyScreen(this));
-                    }
-                }
+                Component.literal("§eOpen Recordings Folder"),
+                btn -> openRecordingsFolder()
         ).bounds(colR, y, bw, bh).build());
+    }
+
+    private void openRecordingsFolder() {
+        try {
+            String dir = config.getRecordingsDir().toAbsolutePath().toString();
+            String os = System.getProperty("os.name", "").toLowerCase();
+            if (os.contains("win")) {
+                new ProcessBuilder("explorer", dir).start();
+            } else if (os.contains("mac")) {
+                new ProcessBuilder("open", dir).start();
+            } else {
+                new ProcessBuilder("xdg-open", dir).start();
+            }
+        } catch (Exception ignored) {}
     }
 
     private void buildHelpersTab(int colL, int colR, int bw, int bh, int y) {
