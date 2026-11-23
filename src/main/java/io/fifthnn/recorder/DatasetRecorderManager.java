@@ -513,13 +513,15 @@ public final class DatasetRecorderManager {
         notifyPlayer(mc, "§e[5ifthNN] Marked Episode #" + ep + " as scrapped (recording continues).");
     }
 
-    /** `/5nn share` — zips all Grade A/B recordings into a single shareable `.zip`. */
+    /** `/5nn share` or F8 "Eval & Pack Dataset" — evaluates all recordings and bundles Grade A/B into 1 Colab-ready .zip. */
     public synchronized Path exportShareZip(Minecraft mc) {
         Path recDir = config.getRecordingsDir();
         String ts = LocalDateTime.now().format(FILE_TS);
-        Path zipPath = config.getRootDir().resolve("5ifthNN_share_" + ts + ".zip");
-        int count = 0;
+        Path zipPath = config.getRootDir().resolve("5ifthNN_dataset_" + ts + ".zip");
+        int kept = 0;
+        int skipped = 0;
         double totalMin = 0.0;
+        List<String> includedFiles = new ArrayList<>();
         try {
             List<Path> recs = new ArrayList<>();
             try (var stream = Files.list(recDir)) {
@@ -530,37 +532,55 @@ public final class DatasetRecorderManager {
                     Path meta = Path.of(rec.toString() + ".meta.json");
                     String grade = "A";
                     double mins = 0.0;
+                    double idlePct = 0.0;
                     if (Files.exists(meta)) {
                         try {
                             JsonObject obj = JsonParser.parseString(Files.readString(meta)).getAsJsonObject();
                             if (obj.has("qualityGrade")) grade = obj.get("qualityGrade").getAsString();
                             if (obj.has("validInGameFrames")) mins = obj.get("validInGameFrames").getAsLong() / 1200.0;
+                            if (obj.has("idlePct")) idlePct = obj.get("idlePct").getAsDouble();
                         } catch (Exception ignored) {}
                     }
-                    if ("C".equalsIgnoreCase(grade)) continue;
+                    // Evaluator filter: keep only Grade A/B with >= 20s valid gameplay and < 65% idle
+                    if ("C".equalsIgnoreCase(grade) || (Files.exists(meta) && (mins < 0.33 || idlePct > 65.0))) {
+                        skipped++;
+                        continue;
+                    }
 
                     addToZip(zos, rec);
                     if (Files.exists(meta)) addToZip(zos, meta);
                     Path tags = Path.of(rec.toString() + ".tags.jsonl");
                     if (Files.exists(tags)) addToZip(zos, tags);
-                    count++;
+                    includedFiles.add(rec.getFileName().toString());
+                    kept++;
                     totalMin += mins;
                 }
+                if (kept > 0) {
+                    Map<String, Object> manifest = new LinkedHashMap<>();
+                    manifest.put("createdAt", ts);
+                    manifest.put("keptMatches", kept);
+                    manifest.put("skippedLowQuality", skipped);
+                    manifest.put("totalValidMinutes", Math.round(totalMin * 100.0) / 100.0);
+                    manifest.put("files", includedFiles);
+                    zos.putNextEntry(new ZipEntry("manifest.json"));
+                    zos.write(GSON.toJson(manifest).getBytes(StandardCharsets.UTF_8));
+                    zos.closeEntry();
+                }
             }
-            if (count == 0) {
+            if (kept == 0) {
                 Files.deleteIfExists(zipPath);
-                notifyPlayer(mc, "§e[5ifthNN] No Grade A/B recordings found to share yet.");
+                notifyPlayer(mc, "§e[5ifthNN] Evaluator found 0 clean Grade A/B recordings to pack (skipped=" + skipped + ").");
                 return null;
             }
             double mb = Files.size(zipPath) / (1024.0 * 1024.0);
             notifyPlayer(mc, String.format(
-                    "§a[5ifthNN] Exported %d clean match(es) (%.1f min, %.2f MB) -> §f%s",
-                    count, totalMin, mb, zipPath.getFileName()
+                    "§a[5ifthNN] Packed %d clean match(es) §7(skipped %d low-quality | %.1f min | %.2f MB) -> §f%s",
+                    kept, skipped, totalMin, mb, zipPath.getFileName()
             ));
             return zipPath;
         } catch (Exception e) {
-            notifyPlayer(mc, "§c[5ifthNN] Share export failed: " + e.getMessage());
-            LOGGER.error("Share export failed", e);
+            notifyPlayer(mc, "§c[5ifthNN] Dataset pack failed: " + e.getMessage());
+            LOGGER.error("Dataset pack failed", e);
             return null;
         }
     }

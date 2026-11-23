@@ -165,7 +165,7 @@ public final class FifthNNControlScreen extends Screen {
 
         y += 26;
         addRenderableWidget(Button.builder(
-                Component.literal("§bExport Share ZIP"),
+                Component.literal("§bEval & Pack Dataset"),
                 btn -> {
                     if (this.minecraft != null) {
                         recorder.exportShareZip(this.minecraft);
