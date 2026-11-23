@@ -3,6 +3,7 @@ name: Build 5ifthNN (MC 26.3 Fabric Mod & Python Suite)
 on:
   push:
     branches: [ main ]
+    tags: [ 'v*' ]
   pull_request:
     branches: [ main ]
   workflow_dispatch:
@@ -11,6 +12,8 @@ jobs:
   build-mod:
     name: Build Fabric 26.3 Mod (Java 25)
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -69,6 +72,26 @@ jobs:
         with:
           name: 5ifthNN-onnxruntime-companion
           path: build/onnx-addon/5ifthNN-OnnxRuntime-*.jar
+
+      - name: Publish Direct JARs to GitHub Releases
+        if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VER=$(grep -E '^mod_version=' gradle.properties | cut -d'=' -f2 | tr -d '[:space:]')
+          TAG="v${VER:-0.2.0}"
+          MAIN_JAR=$(ls build/libs/5ifthNN-*.jar | grep -v sources | head -n 1)
+          ONNX_JAR=$(ls build/onnx-addon/5ifthNN-OnnxRuntime-*.jar | head -n 1 || true)
+          ASSETS=("$MAIN_JAR")
+          [ -n "$ONNX_JAR" ] && ASSETS+=("$ONNX_JAR")
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${ASSETS[@]}" --clobber
+          else
+            gh release create "$TAG" "${ASSETS[@]}" \
+              --title "5ifthNN $TAG (MC 26.3 Fabric)" \
+              --notes "Automated Fabric 26.3 release build. Drop \`$(basename "$MAIN_JAR")\` into \`.minecraft/mods/\` (plus the ONNX Runtime companion JAR for Phase 2 local AI inference)." \
+              --latest
+          fi
 
   test-python:
     name: Verify Python Training & Schema Parity

@@ -321,7 +321,7 @@
           A 100% pure neural network BedWars AI and 20 Hz dataset recorder for Minecraft Java 26.3 (Fabric). Zero hardcoded PvP or bridging scripts — trained via Behavior Cloning, HG-DAgger, and KL-Anchored PPO, exported to ONNX for &lt;1 ms/tick CPU inference.
         </p>
         <div class="actions">
-          <a class="btn btn-primary" href="https://github.com/5ivesaw/5ifthNN/actions" target="_blank" rel="noopener">Download Mod Build (.jar)</a>
+          <a class="btn btn-primary" id="dl-latest" href="https://github.com/5ivesaw/5ifthNN/releases/latest">Download Latest (.jar)</a>
           <a class="btn btn-outline" href="https://discord.gg/uxbuBv6G8d" target="_blank" rel="noopener">Join Discord</a>
           <a class="btn btn-outline" href="https://github.com/5ivesaw/5ifthNN" target="_blank" rel="noopener">GitHub</a>
         </div>
@@ -363,7 +363,7 @@
         <div class="tab-pane active" id="pane-install">
           <div class="section-block">
             <h2>Quick Install (Minecraft Java 26.3)</h2>
-            <p>Download the latest <code>5ifthNN-0.2.0.jar</code> artifact from GitHub Actions and place it in <code>.minecraft/mods/</code> alongside Fabric API and ViaFabricPlus.</p>
+            <p>Download the latest <code>5ifthNN-0.2.0.jar</code> directly from GitHub Releases and place it in <code>.minecraft/mods/</code> alongside Fabric API and ViaFabricPlus.</p>
             <pre class="cmd"># Required mods in .minecraft/mods/
 - Fabric Loader 0.20.1 (MC 26.3, Java 25)
 - Fabric API 0.166.2+26.3
@@ -486,7 +486,7 @@ python3 -m fifthnn.export_onnx --ckpt checkpoints/fifthnn_ppo.pt --out models/fi
           <div class="side-title">Links</div>
           <div class="side-links">
             <a class="side-link" href="https://github.com/5ivesaw/5ifthNN" target="_blank" rel="noopener"><span>GitHub Repository</span><span class="mono">↗</span></a>
-            <a class="side-link" href="https://github.com/5ivesaw/5ifthNN/actions" target="_blank" rel="noopener"><span>Prebuilt JARs (CI)</span><span class="mono">↗</span></a>
+            <a class="side-link" href="https://github.com/5ivesaw/5ifthNN/releases" target="_blank" rel="noopener"><span>All Releases (.jar)</span><span class="mono">↗</span></a>
             <a class="side-link" href="https://discord.gg/uxbuBv6G8d" target="_blank" rel="noopener"><span>Discord Community</span><span class="mono">↗</span></a>
           </div>
         </div>
@@ -510,6 +510,23 @@ python3 -m fifthnn.export_onnx --ckpt checkpoints/fifthnn_ppo.pt --out models/fi
         if (pane) pane.classList.add("active");
       });
     });
+
+    fetch("https://api.github.com/repos/5ivesaw/5ifthNN/releases/latest")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((rel) => {
+        if (!rel || !Array.isArray(rel.assets)) return;
+        const jar = rel.assets.find(
+          (a) => a.name && a.name.endsWith(".jar") && !a.name.includes("sources") && !a.name.includes("OnnxRuntime")
+        );
+        const btn = document.getElementById("dl-latest");
+        const verEl = document.querySelector(".repo-ver");
+        if (rel.tag_name && verEl) verEl.textContent = rel.tag_name;
+        if (btn && jar && jar.browser_download_url) {
+          btn.href = jar.browser_download_url;
+          btn.textContent = "Download " + (rel.tag_name || "Latest") + " (.jar)";
+        }
+      })
+      .catch(() => {});
   </script>
 </body>
 </html>
