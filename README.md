@@ -1,5 +1,7 @@
 # 5ifthNN (v0.2.0)
 
+> **Website GUI:** https://5ivesaw.github.io/5ifthNN/  │  **Discord Community & Dataset Uploads:** https://discord.gg/uxbuBv6G8d
+
 **A lightweight, 100% Pure Neural Network BedWars AI for Minecraft Java 26.3 (1.8-style PvP)** — split into:
 
 1. **Phase 1 — High-Fidelity 1:1 Dataset Recorder (Fabric 26.3 Mod, Schema v2)**:

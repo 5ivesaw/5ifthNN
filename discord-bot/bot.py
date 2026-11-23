@@ -11,9 +11,12 @@ Features:
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
+import re
 import resource
+import shutil
 import sqlite3
 import time
 from pathlib import Path
@@ -24,6 +27,9 @@ from discord import app_commands
 from discord.ext import commands
 
 BASE_DIR = Path(__file__).resolve().parent
+ARCHIVE_DIR = Path(os.environ.get("ARCHIVE_DIR", str(BASE_DIR / "datasets")))
+MAX_DATASET_BYTES = 25 * 1024 * 1024
+MIN_FREE_DISK_BYTES = 350 * 1024 * 1024
 
 
 def _load_dotenv(env_path: Path) -> None:
@@ -73,7 +79,33 @@ class BotDB:
                 total_bytes INTEGER NOT NULL DEFAULT 0,
                 last_ts     INTEGER NOT NULL DEFAULT 0
             );
+            CREATE TABLE IF NOT EXISTS dataset_files (
+                sha256        TEXT PRIMARY KEY,
+                user_id       INTEGER NOT NULL,
+                filename      TEXT NOT NULL,
+                size_bytes    INTEGER NOT NULL,
+                archived_path TEXT NOT NULL DEFAULT '',
+                created_at    INTEGER NOT NULL
+            );
             """
+        )
+        self.conn.commit()
+
+    def has_hash(self, sha256_hex: str) -> bool:
+        row = self.conn.execute(
+            "SELECT 1 FROM dataset_files WHERE sha256 = ?", (sha256_hex,)
+        ).fetchone()
+        return row is not None
+
+    def record_file(
+        self, sha256_hex: str, user_id: int, filename: str, size_bytes: int, archived_path: str
+    ) -> None:
+        self.conn.execute(
+            """
+            INSERT OR IGNORE INTO dataset_files (sha256, user_id, filename, size_bytes, archived_path, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (sha256_hex, user_id, filename, size_bytes, archived_path, int(time.time())),
         )
         self.conn.commit()
 
@@ -217,28 +249,101 @@ async def on_message(message: discord.Message) -> None:
     if message.author.bot or not message.guild or message.guild.id != GUILD_ID:
         return
 
-    if "submit-datasets" in message.channel.name.lower() and message.attachments:
+    if "submit-datasets" in message.channel.name.lower():
+        is_staff = isinstance(message.author, discord.Member) and message.author.guild_permissions.manage_messages
         valid_files = [
             att for att in message.attachments
             if att.filename.lower().endswith((".zip", ".5nn.gz", ".5nn"))
         ]
-        if valid_files and isinstance(message.author, discord.Member):
-            total_sz = sum(a.size for a in valid_files)
-            subs, total_bytes = bot.db.add_contribution(message.author.id, len(valid_files), total_sz)
-            granted = await _sync_contributor_roles(message.author, subs, total_bytes)
-            role_note = f"\n▸ Role unlocked: **{', '.join(granted)}**" if granted else ""
-            emb = discord.Embed(
-                title="✦ Dataset Recorded",
-                description=(
-                    f"Thank you {message.author.mention} — logged {len(valid_files)} file(s).\n"
-                    f"▸ Total: **{subs}** upload(s) │ **{_fmt_mb(total_bytes)}**{role_note}"
-                ),
-                color=COLOR_SUCCESS,
-            )
+        if not valid_files:
+            if not is_staff:
+                try:
+                    await message.delete()
+                except discord.HTTPException:
+                    pass
+                try:
+                    await message.channel.send(
+                        f"{message.author.mention} Only `.zip`, `.5nn`, or `.5nn.gz` datasets from `/5nn share` are allowed in this channel.",
+                        delete_after=8.0,
+                    )
+                except discord.HTTPException:
+                    pass
+            return
+
+        if not isinstance(message.author, discord.Member):
+            return
+
+        accepted = 0
+        accepted_bytes = 0
+        skipped_dups = 0
+        skipped_large = 0
+        archived_cnt = 0
+
+        for att in valid_files:
+            if att.size > MAX_DATASET_BYTES:
+                skipped_large += 1
+                continue
             try:
-                await message.reply(embed=emb, mention_author=False)
+                raw = await att.read()
+            except discord.HTTPException:
+                continue
+            digest = hashlib.sha256(raw).hexdigest()
+            if bot.db.has_hash(digest):
+                skipped_dups += 1
+                continue
+
+            archived_path = ""
+            try:
+                ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+                free_bytes = shutil.disk_usage(ARCHIVE_DIR).free
+                if free_bytes - len(raw) >= MIN_FREE_DISK_BYTES:
+                    safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", att.filename)[:80] or "dataset.zip"
+                    user_dir = ARCHIVE_DIR / str(message.author.id)
+                    user_dir.mkdir(parents=True, exist_ok=True)
+                    dest = user_dir / f"{int(time.time())}_{digest[:8]}_{safe_name}"
+                    dest.write_bytes(raw)
+                    archived_path = str(dest)
+                    archived_cnt += 1
+            except OSError:
+                archived_path = ""
+
+            bot.db.record_file(digest, message.author.id, att.filename[:120], len(raw), archived_path)
+            accepted += 1
+            accepted_bytes += len(raw)
+
+        if accepted == 0:
+            if not is_staff:
+                try:
+                    await message.delete()
+                except discord.HTTPException:
+                    pass
+            reason = "duplicate dataset(s) already submitted" if skipped_dups else "file(s) exceed 25 MB limit"
+            try:
+                await message.channel.send(
+                    f"{message.author.mention} Upload rejected ({reason}).",
+                    delete_after=10.0,
+                )
             except discord.HTTPException:
                 pass
+            return
+
+        subs, total_bytes = bot.db.add_contribution(message.author.id, accepted, accepted_bytes)
+        granted = await _sync_contributor_roles(message.author, subs, total_bytes)
+        role_note = f"\n▸ Role unlocked: **{', '.join(granted)}**" if granted else ""
+        dup_note = f"\n▸ Skipped `{skipped_dups}` duplicate(s)" if skipped_dups else ""
+        arch_note = f" │ Archived: `{archived_cnt}`" if archived_cnt else ""
+        emb = discord.Embed(
+            title="✦ Dataset Recorded",
+            description=(
+                f"Thank you {message.author.mention} — verified `{accepted}` new file(s) (`{_fmt_mb(accepted_bytes)}`).\n"
+                f"▸ Total: **{subs}** upload(s) │ **{_fmt_mb(total_bytes)}**{arch_note}{dup_note}{role_note}"
+            ),
+            color=COLOR_SUCCESS,
+        )
+        try:
+            await message.reply(embed=emb, mention_author=False)
+        except discord.HTTPException:
+            pass
 
 
 @bot.tree.command(name="help", description="View 5ifthNN commands and links")
