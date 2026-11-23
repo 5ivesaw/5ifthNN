@@ -345,7 +345,7 @@ public final class BedWarsStateTracker {
             if (recentPingCount < recentPings.length) recentPingCount++;
         }
         float minTpsFloor = slowMoDrillMode ? 10.0f : 14.0f;
-        if (wallDt > 180L || serverTpsEst < minTpsFloor || (recentPingCount >= 10 && ping > medianPing + 120)) {
+        if (wallDt > 180L || serverTpsEst < minTpsFloor || ping > 200 || (recentPingCount >= 10 && ping > medianPing + 120)) {
             lagSpikeThisTick = true;
         }
 

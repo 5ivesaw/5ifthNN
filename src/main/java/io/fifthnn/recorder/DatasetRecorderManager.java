@@ -74,6 +74,8 @@ public final class DatasetRecorderManager {
     private long sessionQuarantinedTicks = 0;
     private int sessionLagbacks = 0;
     private int sessionFlickers = 0;
+    private long sessionPingSum = 0;
+    private long sessionPingCount = 0;
     private int startEpisodeId = 1;
 
     // F7 double-tap detection, Auto-Requeue & HUD toast
@@ -183,6 +185,8 @@ public final class DatasetRecorderManager {
             sessionQuarantinedTicks = 0;
             sessionLagbacks = 0;
             sessionFlickers = 0;
+            sessionPingSum = 0;
+            sessionPingCount = 0;
             startEpisodeId = stateTracker.getEpisodeId();
             stateTracker.getFlickerMonitor().reset();
 
@@ -239,14 +243,18 @@ public final class DatasetRecorderManager {
             double idlePct = validFrames > 0 ? (100.0 * sessionIdleTicks) / validFrames : 100.0;
             double flickerRate = sessionBlocksPlaced >= 10 ? ((double) sessionFlickers / sessionBlocksPlaced) : 0.0;
             double lagbacksPerMin = validMin > 0.25 ? (sessionLagbacks / validMin) : 0.0;
+            double avgPingMs = sessionPingCount > 0 ? ((double) sessionPingSum / sessionPingCount) : 0.0;
 
-            // End-of-match auto-prune for useless / severely corrupted auto-recorded matches
+            // End-of-match auto-prune for useless / severely corrupted / >200ms high-ping matches
             if (allowAutoPrune) {
                 String pruneReason = null;
                 if (validSec < 20.0) {
                     pruneReason = "too short (<20s)";
                 } else if (idlePct > 75.0) {
                     pruneReason = String.format("mostly AFK (%.0f%% idle)", idlePct);
+                } else if (avgPingMs > 200.0) {
+                    pruneReason = String.format("high ping (avg %.0fms > 200ms)", avgPingMs);
+                    notifyPlayer(mc, "§e[5ifthNN] Skipped laggy match (" + pruneReason + ")");
                 } else if (flickerRate > 0.30 || lagbacksPerMin > 8.0) {
                     pruneReason = String.format("severe lag/flickers (FLK=%d, RB=%d)", sessionFlickers, sessionLagbacks);
                     notifyPlayer(mc, "§e[5ifthNN] Skipped laggy match (" + pruneReason + ") — use ViaFabricPlus 1.8.x!");
@@ -459,6 +467,10 @@ public final class DatasetRecorderManager {
         }
         if (fr.guiClickSlot >= 0) sessionShopClicks++;
         if ((fr.eventFlagsThisTick & FifthNNSchema.EVT_BLOCK_PLACED) != 0) sessionBlocksPlaced++;
+        if (fr.pingMs > 0) {
+            sessionPingSum += fr.pingMs;
+            sessionPingCount++;
+        }
 
         boolean ok = activeWriter.enqueueFrame(fr);
         if (!ok || activeWriter.hasFailed()) {
@@ -533,16 +545,18 @@ public final class DatasetRecorderManager {
                     String grade = "A";
                     double mins = 0.0;
                     double idlePct = 0.0;
+                    double avgPing = 0.0;
                     if (Files.exists(meta)) {
                         try {
                             JsonObject obj = JsonParser.parseString(Files.readString(meta)).getAsJsonObject();
                             if (obj.has("qualityGrade")) grade = obj.get("qualityGrade").getAsString();
                             if (obj.has("validInGameFrames")) mins = obj.get("validInGameFrames").getAsLong() / 1200.0;
                             if (obj.has("idlePct")) idlePct = obj.get("idlePct").getAsDouble();
+                            if (obj.has("avgPingMs")) avgPing = obj.get("avgPingMs").getAsDouble();
                         } catch (Exception ignored) {}
                     }
-                    // Evaluator filter: keep only Grade A/B with >= 20s valid gameplay and < 65% idle
-                    if ("C".equalsIgnoreCase(grade) || (Files.exists(meta) && (mins < 0.33 || idlePct > 65.0))) {
+                    // Evaluator filter: keep only Grade A/B with >= 20s valid gameplay, < 65% idle, and <= 200ms ping
+                    if ("C".equalsIgnoreCase(grade) || avgPing > 200.0 || (Files.exists(meta) && (mins < 0.33 || idlePct > 65.0))) {
                         skipped++;
                         continue;
                     }
@@ -612,6 +626,8 @@ public final class DatasetRecorderManager {
             obj.addProperty("pvpTicks", sessionPvpTicks);
             obj.addProperty("lagbacks", sessionLagbacks);
             obj.addProperty("flickers", sessionFlickers);
+            double avgPing = sessionPingCount > 0 ? ((double) sessionPingSum / sessionPingCount) : 0.0;
+            obj.addProperty("avgPingMs", Math.round(avgPing * 10.0) / 10.0);
             Files.writeString(metaPath, GSON.toJson(obj), StandardCharsets.UTF_8);
         } catch (Exception e) {
             LOGGER.warn("Failed to enrich meta sidecar: {}", e.getMessage());
