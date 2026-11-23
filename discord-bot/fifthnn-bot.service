@@ -1,0 +1,20 @@
+[Unit]
+Description=5ifthNN Discord Server Manager Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/fifthnn-bot
+EnvironmentFile=/opt/fifthnn-bot/.env
+ExecStart=/opt/fifthnn-bot/venv/bin/python -u /opt/fifthnn-bot/bot.py
+Restart=always
+RestartSec=5
+
+# Strict VPS resource caps (~20-25MB normal usage)
+MemoryMax=96M
+CPUQuota=15%
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
